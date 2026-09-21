@@ -3,7 +3,7 @@
 Fetches live Booking.com + Expedia + brand-direct rates for a primary hotel
 and its competitors over a short date window, renders a hotel x date grid
 with the cheapest rate per night highlighted, plus a rate-parity view
-(brand-direct vs. cheapest OTA). Persists added hotels and every fetch's
+(brand-direct vs. cheapest third-party site). Persists added hotels and every fetch's
 results to Supabase when configured (see supabase_client.py) — see
 docs/poc-scraping-demo/PLAN.md and DEPLOY.md for the full scope history.
 
@@ -311,9 +311,9 @@ if "rate_rows" in st.session_state:
     st.markdown(table_html, unsafe_allow_html=True)
 
     if "Brand.com" in df["source"].unique():
-        st.subheader("Rate parity (Brand.com vs. cheapest OTA)")
+        st.subheader("Rate parity (Brand.com vs. cheapest third-party site)")
         st.caption(
-            "Mirrors the Alert Catalog's Parity violation rule: an OTA undercutting the brand-direct rate. "
+            "Mirrors the Alert Catalog's Parity violation rule: a third-party site undercutting the brand-direct rate. "
             "Brand-direct reads are best-effort (see brand_scraper.py) — treat gaps as directional, and "
             "check the source URLs before acting on one."
         )
@@ -324,24 +324,24 @@ if "rate_rows" in st.session_state:
         cheapest_ota = (
             ota_rows.sort_values("lowest_rate").groupby(["Hotel", "Date"], as_index=False).first()
             [["Hotel", "Date", "source", "lowest_rate", "url"]]
-            .rename(columns={"source": "Cheapest OTA", "lowest_rate": "OTA rate", "url": "OTA URL"})
+            .rename(columns={"source": "Cheapest third-party", "lowest_rate": "Third-party rate", "url": "Third-party URL"})
         )
         parity = brand_rows.merge(cheapest_ota, on=["Hotel", "Date"], how="inner")
         if parity.empty:
-            st.caption("No overlapping rows yet — fetch at least one OTA source alongside Brand.com.")
+            st.caption("No overlapping rows yet — fetch at least one third-party source alongside Brand.com.")
         else:
-            parity["Gap ($)"] = parity["OTA rate"] - parity["Brand rate"]
+            parity["Gap ($)"] = parity["Third-party rate"] - parity["Brand rate"]
             parity["Status"] = parity["Gap ($)"].apply(
                 lambda g: "🔴 Parity violation" if g < -0.5 else ("🟢 Brand wins" if g > 0.5 else "⚪ In parity")
             )
             st.dataframe(
-                parity[["Hotel", "Date", "Brand rate", "Cheapest OTA", "OTA rate", "Gap ($)", "Status", "Brand URL", "OTA URL"]],
+                parity[["Hotel", "Date", "Brand rate", "Cheapest third-party", "Third-party rate", "Gap ($)", "Status", "Brand URL", "Third-party URL"]],
                 width="stretch",
                 column_config={
                     "Brand URL": st.column_config.LinkColumn("Brand URL"),
-                    "OTA URL": st.column_config.LinkColumn("OTA URL"),
+                    "Third-party URL": st.column_config.LinkColumn("Third-party URL"),
                     "Brand rate": st.column_config.NumberColumn(format="$%.0f"),
-                    "OTA rate": st.column_config.NumberColumn(format="$%.0f"),
+                    "Third-party rate": st.column_config.NumberColumn(format="$%.0f"),
                 },
             )
 else:

@@ -1,6 +1,6 @@
 """Brand-direct ("rate parity") scraper — the hotel's own official site.
 
-OTA scrapers (booking_scraper.py, expedia_scraper.py) parse known HTML
+Third-party scrapers (booking_scraper.py, expedia_scraper.py) parse known HTML
 structure for one site each. Brand-direct doesn't offer that here: this demo
 set alone spans 5 different booking engines (Marriott, Hilton, IHG, Wyndham,
 Best Western), each with different markup, and some ignore date query
@@ -15,7 +15,7 @@ its own default dates, the extraction prompt asks the model to report
 whatever it actually saw (and which dates that reflects) rather than fail
 silently. This is the "Own rate not found" / parity-check side of the
 Alert Catalog's Rate Integrity and Parity & Distribution sections — not
-expected to be as reliable as the OTA scrapers.
+expected to be as reliable as the third-party-site scrapers.
 """
 
 from datetime import date
