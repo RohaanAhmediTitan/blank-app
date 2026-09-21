@@ -68,8 +68,20 @@ if "custom_hotels" not in st.session_state:
 
 with st.sidebar:
     st.header("Settings")
-    start_date = st.date_input("Start date", value=date.today() + timedelta(days=1))
-    num_nights = st.slider("Nights to check", min_value=1, max_value=14, value=3)
+    date_col1, date_col2 = st.columns(2)
+    with date_col1:
+        start_date = st.date_input("From", value=date.today() + timedelta(days=1))
+    with date_col2:
+        end_date = st.date_input("To", value=date.today() + timedelta(days=4))
+
+    num_nights = (end_date - start_date).days
+    if num_nights <= 0:
+        st.error("**To** must be after **From**.")
+        num_nights = 0
+    elif num_nights > 30:
+        st.warning(f"{num_nights} nights selected — that's a lot of Firecrawl calls per hotel/source. Consider narrowing the range.")
+
+    st.caption(f"{num_nights} night(s)" if num_nights > 0 else "Pick a valid date range to enable fetching.")
     guests = st.number_input("Guests", min_value=1, max_value=4, value=2)
     sources = st.multiselect(
         "Sources",
@@ -139,7 +151,7 @@ with st.sidebar:
         f"rarely slower — see docs/SESSION_CONTEXT.md)."
     )
 
-    fetch_clicked = st.button("Fetch Rates", type="primary")
+    fetch_clicked = st.button("Fetch Rates", type="primary", disabled=num_nights <= 0)
 
 all_hotels: list[Hotel] = HOTELS + st.session_state["custom_hotels"]
 
