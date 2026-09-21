@@ -100,7 +100,7 @@ def get_brand_rate(
     """Fetch the brand-direct rate for one hotel/date via Firecrawl extract."""
     if not brand_url:
         return {
-            "source": "Brand direct",
+            "source": "Brand.com",
             "url": None,
             "available": False,
             "lowest_rate": None,
@@ -119,11 +119,11 @@ def get_brand_rate(
     try:
         data = firecrawl_extract([url], RATE_SCHEMA, prompt)
     except Exception as exc:  # noqa: BLE001 - surface any extract failure in the grid, demo keeps going
-        return {"source": "Brand direct", "url": url, "available": False, "lowest_rate": None, "error": str(exc)}
+        return {"source": "Brand.com", "url": url, "available": False, "lowest_rate": None, "error": str(exc)}
 
     if not data or not data.get("available"):
         return {
-            "source": "Brand direct",
+            "source": "Brand.com",
             "url": url,
             "available": False,
             "lowest_rate": None,
@@ -132,7 +132,7 @@ def get_brand_rate(
         }
 
     return {
-        "source": "Brand direct",
+        "source": "Brand.com",
         "url": url,
         "available": True,
         "lowest_rate": data.get("lowest_rate"),

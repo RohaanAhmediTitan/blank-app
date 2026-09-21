@@ -85,9 +85,9 @@ with st.sidebar:
     guests = st.number_input("Guests", min_value=1, max_value=4, value=2)
     sources = st.multiselect(
         "Sources",
-        ["Booking.com", "Expedia", "Brand direct"],
+        ["Booking.com", "Expedia", "Brand.com"],
         default=["Booking.com"],
-        help="Expedia needs an 8s render wait to avoid its loading skeleton. Brand direct (rate parity — "
+        help="Expedia needs an 8s render wait to avoid its loading skeleton. Brand.com (rate parity — "
         "the hotel's own official-site rate) is the slowest and least reliable, since it reads whatever "
         "each brand's booking widget renders rather than a known page structure — add it last.",
     )
@@ -139,7 +139,7 @@ with st.sidebar:
     if "Expedia" in sources:
         est_seconds += n_hotels * SECONDS_PER_EXPEDIA_RESOLVE  # once per hotel
         est_seconds += n_hotels * num_nights * SECONDS_PER_EXPEDIA_DETAIL_CALL
-    if "Brand direct" in sources:
+    if "Brand.com" in sources:
         est_seconds += n_hotels * num_nights * SECONDS_PER_BRAND_CALL
     # No concurrency discount: measured testing showed Firecrawl mostly
     # serializes our calls on their end regardless of our thread pool size,
@@ -210,7 +210,7 @@ if fetch_clicked:
         try:
             result = get_brand_rate(hotel.brand_url, hotel.brand_domain, check_in, check_out, guests)
         except Exception as exc:  # noqa: BLE001
-            result = {"source": "Brand direct", "url": hotel.brand_url or None, "available": False, "lowest_rate": None, "error": str(exc)}
+            result = {"source": "Brand.com", "url": hotel.brand_url or None, "available": False, "lowest_rate": None, "error": str(exc)}
         return {"Hotel": hotel.name, "Date": check_in, "Fetched at": datetime.now().strftime("%H:%M:%S"), **result}
 
     jobs = []
@@ -220,7 +220,7 @@ if fetch_clicked:
                 jobs.append((_fetch_booking, hotel, check_in))
             if "Expedia" in sources:
                 jobs.append((_fetch_expedia, hotel, check_in))
-            if "Brand direct" in sources:
+            if "Brand.com" in sources:
                 jobs.append((_fetch_brand, hotel, check_in))
 
     rows = []
@@ -249,62 +249,72 @@ if "rate_rows" in st.session_state:
         f"{len(df)} live requests made just now. Re-click **Fetch Rates** any time to prove it isn't cached."
     )
 
-    st.subheader("Cross-check against the live site")
+    st.subheader("Rates by hotel and night")
     st.caption(
-        "Pick a row, then open the exact URL our scraper just hit — same hotel, same dates, "
-        "same guest count — and watch the price match live."
-    )
-    cc_col1, cc_col2, cc_col3 = st.columns(3)
-    with cc_col1:
-        cc_hotel = st.selectbox("Hotel", sorted(df["Hotel"].unique()), key="cc_hotel")
-    with cc_col2:
-        cc_date = st.selectbox("Date", sorted(df[df["Hotel"] == cc_hotel]["Date"].unique()), key="cc_date")
-    with cc_col3:
-        cc_source_options = df[(df["Hotel"] == cc_hotel) & (df["Date"] == cc_date)]["source"].unique()
-        cc_source = st.selectbox("Source", sorted(cc_source_options), key="cc_source")
-
-    cc_row = df[(df["Hotel"] == cc_hotel) & (df["Date"] == cc_date) & (df["source"] == cc_source)]
-    if not cc_row.empty:
-        cc_url = cc_row.iloc[0].get("url")
-        cc_rate = cc_row.iloc[0].get("lowest_rate")
-        if cc_url:
-            label = f"Open on {cc_source} →" + (f"  (we show ${cc_rate:.0f})" if cc_rate else "")
-            st.link_button(label, cc_url, type="primary")
-        else:
-            st.caption("No source URL captured for this row (hotel wasn't found on this source).")
-
-    st.subheader("Raw results (click a Source URL to verify against the live site yourself)")
-    st.dataframe(
-        df,
-        width="stretch",
-        column_config={"url": st.column_config.LinkColumn("Source URL")},
+        "One row per hotel/night. Each rate is a clickable link straight to the exact page our scraper "
+        "read it from — click 🔗 to verify against the live site yourself. Cheapest rate in each row is highlighted."
     )
 
-    st.subheader("Lowest rate per hotel / night")
-    grid = df.pivot_table(index="Hotel", columns="Date", values="lowest_rate", aggfunc="min")
-    hotel_order = [h.name for h in all_hotels]
-    grid = grid.reindex(hotel_order)
+    SOURCE_ORDER = ["Booking.com", "Expedia", "Brand.com"]
+    present_sources = [s for s in SOURCE_ORDER if s in df["source"].unique()]
 
-    def highlight_cheapest(col: pd.Series) -> list[str]:
-        cheapest = col.min()
-        return ["background-color: #d4edda; font-weight: bold" if v == cheapest else "" for v in col]
+    def _rate_cell(sub: pd.DataFrame) -> tuple[str, float | None]:
+        """Returns (html for this cell, numeric rate for cheapest-highlighting)."""
+        if sub.empty:
+            return "—", None
+        row = sub.iloc[0]
+        if not row.get("available") or pd.isna(row.get("lowest_rate")):
+            title = f' title="{row["error"]}"' if row.get("error") else ""
+            return f'<span{title} style="color:#999;">Sold out</span>', None
+        rate = row["lowest_rate"]
+        url = row.get("url")
+        text = f"${rate:,.0f}"
+        if url:
+            return f'<a href="{url}" target="_blank" rel="noopener" style="text-decoration:none;">{text} 🔗</a>', rate
+        return text, rate
 
-    st.dataframe(
-        grid.style.format("${:.0f}", na_rep="Sold out").apply(highlight_cheapest, axis=0),
-        width="stretch",
+    header_cells = "".join(f'<th style="text-align:left;padding:6px 12px;">{s}</th>' for s in present_sources)
+    html_rows = []
+    for hotel in all_hotels:
+        hotel_df = df[df["Hotel"] == hotel.name]
+        for check_in in sorted(hotel_df["Date"].unique()):
+            day_df = hotel_df[hotel_df["Date"] == check_in]
+            cells, rates = [], []
+            for source in present_sources:
+                html, rate = _rate_cell(day_df[day_df["source"] == source])
+                cells.append(html)
+                rates.append(rate)
+            cheapest = min([r for r in rates if r is not None], default=None)
+            cell_html = "".join(
+                f'<td style="padding:6px 12px;{"background:#d4edda;font-weight:bold;" if r == cheapest and r is not None else ""}">{h}</td>'
+                for h, r in zip(cells, rates)
+            )
+            role = "Primary" if hotel.is_primary else "Competitor"
+            html_rows.append(
+                f'<tr><td style="padding:6px 12px;white-space:nowrap;"><b>{hotel.name}</b><br>'
+                f'<span style="color:#888;font-size:0.85em;">{role}</span></td>'
+                f'<td style="padding:6px 12px;white-space:nowrap;">{check_in}</td>{cell_html}</tr>'
+            )
+
+    table_html = (
+        '<table style="border-collapse:collapse;width:100%;">'
+        f'<thead><tr><th style="text-align:left;padding:6px 12px;">Hotel</th>'
+        f'<th style="text-align:left;padding:6px 12px;">Date</th>{header_cells}</tr></thead>'
+        f"<tbody>{''.join(html_rows)}</tbody></table>"
     )
+    st.markdown(table_html, unsafe_allow_html=True)
 
-    if "Brand direct" in df["source"].unique():
-        st.subheader("Rate parity (Brand direct vs. cheapest OTA)")
+    if "Brand.com" in df["source"].unique():
+        st.subheader("Rate parity (Brand.com vs. cheapest OTA)")
         st.caption(
             "Mirrors the Alert Catalog's Parity violation rule: an OTA undercutting the brand-direct rate. "
             "Brand-direct reads are best-effort (see brand_scraper.py) — treat gaps as directional, and "
             "check the source URLs before acting on one."
         )
         available = df[df["available"] == True]  # noqa: E712 - pandas bool comparison, not identity
-        brand_rows = available[available["source"] == "Brand direct"][["Hotel", "Date", "lowest_rate", "url"]]
+        brand_rows = available[available["source"] == "Brand.com"][["Hotel", "Date", "lowest_rate", "url"]]
         brand_rows = brand_rows.rename(columns={"lowest_rate": "Brand rate", "url": "Brand URL"})
-        ota_rows = available[available["source"] != "Brand direct"]
+        ota_rows = available[available["source"] != "Brand.com"]
         cheapest_ota = (
             ota_rows.sort_values("lowest_rate").groupby(["Hotel", "Date"], as_index=False).first()
             [["Hotel", "Date", "source", "lowest_rate", "url"]]
@@ -312,7 +322,7 @@ if "rate_rows" in st.session_state:
         )
         parity = brand_rows.merge(cheapest_ota, on=["Hotel", "Date"], how="inner")
         if parity.empty:
-            st.caption("No overlapping rows yet — fetch at least one OTA source alongside Brand direct.")
+            st.caption("No overlapping rows yet — fetch at least one OTA source alongside Brand.com.")
         else:
             parity["Gap ($)"] = parity["OTA rate"] - parity["Brand rate"]
             parity["Status"] = parity["Gap ($)"].apply(
