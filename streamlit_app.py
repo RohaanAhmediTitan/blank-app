@@ -40,11 +40,9 @@ st.set_page_config(page_title="RevRadar Rate Shop POC", layout="wide")
 st.title("RevRadar — Live Rate Comparison POC")
 st.caption(
     "Primary: **Fairfield Inn & Suites San Francisco Airport/Millbrae** vs. its real SFO-airport compset. "
-    "Rates are fetched live from Booking.com, Expedia, and each hotel's own brand-direct site — not canned data."
+    "Rates are fetched live from Booking.com, Expedia, and each hotel's own brand-direct site."
 )
-if supabase_client.is_enabled():
-    st.caption("📌 Persistence: connected to Supabase — added hotels and every fetch are saved.")
-else:
+if not supabase_client.is_enabled():
     st.caption(
         "⚠️ Persistence: SUPABASE_URL/SUPABASE_KEY not set — added hotels and fetch history are "
         "session-only and will be lost on refresh. See sql/schema.sql to enable persistence."
