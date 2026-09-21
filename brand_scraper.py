@@ -117,7 +117,7 @@ def get_brand_rate(
         "figure is visible on the page at all."
     )
     try:
-        data = firecrawl_extract([url], RATE_SCHEMA, prompt)
+        data = firecrawl_extract(url, RATE_SCHEMA, prompt)
     except Exception as exc:  # noqa: BLE001 - surface any extract failure in the grid, demo keeps going
         return {"source": "Brand.com", "url": url, "available": False, "lowest_rate": None, "error": str(exc)}
 
@@ -128,7 +128,7 @@ def get_brand_rate(
             "available": False,
             "lowest_rate": None,
             "room_type": data.get("room_type") if data else None,
-            "error": None if data else "Extract job failed or timed out",
+            "error": None if data else "Couldn't scrape this page (site may be blocking automated access)",
         }
 
     return {

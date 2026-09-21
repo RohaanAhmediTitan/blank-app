@@ -14,6 +14,7 @@ timestamps + clickable source links) so results are verifiable, not canned.
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -94,6 +95,9 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Add a hotel (e.g. one the client names live)")
+    with st.expander("📖 How to add a test hotel (guide, with real examples)"):
+        guide_path = Path(__file__).parent / "ADDING_A_HOTEL.md"
+        st.markdown(guide_path.read_text(encoding="utf-8"))
     with st.form("add_hotel_form", clear_on_submit=True):
         new_name = st.text_input("Hotel name")
         new_city = st.text_input("City, State (used to search Booking.com)")
@@ -264,8 +268,10 @@ if "rate_rows" in st.session_state:
             return "—", None
         row = sub.iloc[0]
         if not row.get("available") or pd.isna(row.get("lowest_rate")):
-            title = f' title="{row["error"]}"' if row.get("error") else ""
-            return f'<span{title} style="color:#999;">Sold out</span>', None
+            error = row.get("error")
+            label = "Couldn't fetch ⚠️" if error else "Sold out"
+            title = f' title="{error}"' if error else ""
+            return f'<span{title} style="color:#999;">{label}</span>', None
         rate = row["lowest_rate"]
         url = row.get("url")
         text = f"${rate:,.0f}"

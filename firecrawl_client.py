@@ -82,39 +82,35 @@ def firecrawl_fetch_html(url: str, wait_for: int | None = None, max_age: int | N
     raise last_error
 
 
-def firecrawl_extract(urls: list[str], schema: dict, prompt: str, poll_timeout: int = 90) -> dict | None:
-    """Submit a Firecrawl /v2/extract job and poll until it completes.
+def firecrawl_extract(url: str, schema: dict, prompt: str) -> dict | None:
+    """LLM-based structured extraction from one page via Firecrawl.
 
-    Extract is LLM-based (unlike /v2/scrape's raw HTML we parse ourselves),
-    so it's the practical way to read a rate off an arbitrary brand-direct
-    booking engine without a hand-written parser per brand — see
-    brand_scraper.py. Returns the extracted `data` object, or None on
-    failure/timeout (caller treats that as "not available").
+    Uses /v2/scrape with a `json` format entry — the current, synchronous
+    replacement for /v2/extract, which Firecrawl has deprecated (and which,
+    as of 2026-09-21, was actively rejecting valid URLs with a bogus "All
+    provided URLs are invalid" error on every call). This is how
+    brand_scraper.py reads a rate off an arbitrary brand-direct booking
+    engine without a hand-written parser per brand. Returns the extracted
+    object, or None if the page couldn't be scraped at all (e.g. a site
+    whose bot defenses block Firecrawl outright — that's a real "couldn't
+    reach the page" failure, not "no rate found").
     """
     base = FIRECRAWL_API_URL.rsplit("/scrape", 1)[0]  # .../v2/scrape -> .../v2
     headers = {"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"}
 
     resp = requests.post(
-        f"{base}/extract",
+        f"{base}/scrape",
         headers=headers,
-        json={"urls": urls, "prompt": prompt, "schema": schema, "scrapeOptions": {"onlyMainContent": False}},
-        timeout=30,
+        json={
+            "url": url,
+            "formats": [{"type": "json", "schema": schema, "prompt": prompt}],
+            "onlyMainContent": False,
+        },
+        timeout=60,
     )
-    resp.raise_for_status()
-    job = resp.json()
-    if not job.get("success") or not job.get("id"):
+    if not resp.ok:
         return None
-
-    job_id = job["id"]
-    deadline = time.monotonic() + poll_timeout
-    while time.monotonic() < deadline:
-        time.sleep(3)
-        poll = requests.get(f"{base}/extract/{job_id}", headers=headers, timeout=30)
-        poll.raise_for_status()
-        result = poll.json()
-        status = result.get("status")
-        if status == "completed":
-            return result.get("data")
-        if status in ("failed", "cancelled"):
-            return None
-    return None
+    body = resp.json()
+    if not body.get("success"):
+        return None
+    return body.get("data", {}).get("json")
