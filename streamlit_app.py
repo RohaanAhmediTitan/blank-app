@@ -278,8 +278,11 @@ if "rate_rows" in st.session_state:
         row = sub.iloc[0]
         if not row.get("available") or pd.isna(row.get("lowest_rate")):
             error = row.get("error")
-            label = "Couldn't fetch ⚠️" if error else "Sold out"
-            title = f' title="{error}"' if error else ""
+            has_error = pd.notna(error) and error  # NaN is truthy in Python — pandas pads
+            # missing "error" keys with NaN when other rows in the batch do have one, so a
+            # plain `if error` here misread every genuine sold-out row as a fetch failure.
+            label = "Couldn't fetch ⚠️" if has_error else "Sold out"
+            title = f' title="{error}"' if has_error else ""
             return f'<span{title} style="color:#999;">{label}</span>', None
         rate = row["lowest_rate"]
         url = row.get("url")
