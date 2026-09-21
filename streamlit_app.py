@@ -35,8 +35,8 @@ SECONDS_PER_EXPEDIA_RESOLVE = 8  # once per hotel, not per date
 SECONDS_PER_EXPEDIA_DETAIL_CALL = 18
 SECONDS_PER_BRAND_CALL = 25  # extract is async (submit + poll), slower than a plain scrape
 
-st.set_page_config(page_title="RevRadar Rate Shop Demo", layout="wide")
-st.title("RevRadar — Live Rate Comparison Demo")
+st.set_page_config(page_title="RevRadar Rate Shop POC", layout="wide")
+st.title("RevRadar — Live Rate Comparison POC")
 st.caption(
     "Primary: **Fairfield Inn & Suites San Francisco Airport/Millbrae** vs. its real SFO-airport compset. "
     "Rates are fetched live from Booking.com, Expedia, and each hotel's own brand-direct site — not canned data."
@@ -155,7 +155,7 @@ with st.sidebar:
 
 all_hotels: list[Hotel] = HOTELS + st.session_state["custom_hotels"]
 
-st.subheader("Demo hotel set")
+st.subheader("POC hotel set")
 st.table(
     pd.DataFrame(
         [{"Hotel": h.name, "Role": "Primary" if h.is_primary else "Competitor"} for h in all_hotels]
