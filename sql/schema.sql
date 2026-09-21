@@ -1,5 +1,7 @@
 -- RevRadar scraping POC — Supabase schema
--- Run this once in the Supabase dashboard: Project -> SQL Editor -> New query -> paste -> Run.
+-- Run in the Supabase dashboard: Project -> SQL Editor -> New query -> paste -> Run.
+-- Safe to re-run any time (e.g. after pulling a schema update) — every statement
+-- is idempotent.
 
 create table if not exists client_hotels (
   id uuid primary key default gen_random_uuid(),
@@ -42,6 +44,13 @@ create index if not exists rate_shops_hotel_date_idx on rate_shops (hotel_name, 
 -- non-demo client data.
 alter table client_hotels enable row level security;
 alter table rate_shops enable row level security;
+
+-- drop-then-create makes this safe to re-run (Postgres has no
+-- CREATE POLICY IF NOT EXISTS)
+drop policy if exists "anon read client_hotels" on client_hotels;
+drop policy if exists "anon insert client_hotels" on client_hotels;
+drop policy if exists "anon read rate_shops" on rate_shops;
+drop policy if exists "anon insert rate_shops" on rate_shops;
 
 create policy "anon read client_hotels" on client_hotels for select using (true);
 create policy "anon insert client_hotels" on client_hotels for insert with check (true);
