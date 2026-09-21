@@ -6,11 +6,17 @@ create table if not exists client_hotels (
   name text not null,
   address text,
   booking_url text,
+  expedia_url text,
   brand_name text,
   brand_url text,
   brand_domain text,
   created_at timestamptz not null default now()
 );
+
+-- Safe to re-run: adds expedia_url if this table already existed without it
+-- (added 2026-09-21 — Expedia's address-based search can match the wrong
+-- nearby hotel, so a direct URL is now offered same as booking_url).
+alter table client_hotels add column if not exists expedia_url text;
 
 create table if not exists rate_shops (
   id bigint generated always as identity primary key,

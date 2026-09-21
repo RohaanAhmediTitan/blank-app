@@ -58,6 +58,7 @@ if "custom_hotels" not in st.session_state:
             is_primary=False,
             address=h.get("address") or h["name"],
             booking_url=h.get("booking_url") or "",
+            expedia_url=h.get("expedia_url") or "",
             brand_name=h.get("brand_name") or "",
             brand_url=h.get("brand_url") or "",
             brand_domain=h.get("brand_domain") or "",
@@ -101,6 +102,11 @@ with st.sidebar:
         new_city = st.text_input("City, State (used to search Booking.com)")
         new_booking_url = st.text_input("Booking.com URL (optional — skips search if given)")
         new_address = st.text_input("Street address (optional — improves Expedia match)")
+        new_expedia_url = st.text_input(
+            "Expedia URL (optional — skips search if given)",
+            help="Expedia's address search sometimes matches the wrong nearby hotel instead of this one — "
+            "giving a direct URL avoids that entirely, same reason Booking.com URL is offered above.",
+        )
         new_brand_name = st.text_input("Brand (optional, e.g. Hilton, Marriott)")
         new_brand_url = st.text_input("Brand-direct booking page URL (optional — enables rate parity check)")
         add_clicked = st.form_submit_button("Add to comparison")
@@ -113,6 +119,7 @@ with st.sidebar:
                     is_primary=False,
                     booking_url=new_booking_url.strip(),
                     address=resolved_address,
+                    expedia_url=new_expedia_url.strip(),
                     brand_name=new_brand_name.strip(),
                     brand_url=new_brand_url.strip(),
                     brand_domain=brand_domain,
@@ -122,6 +129,7 @@ with st.sidebar:
                 name=new_name,
                 address=resolved_address,
                 booking_url=new_booking_url.strip(),
+                expedia_url=new_expedia_url.strip(),
                 brand_name=new_brand_name.strip(),
                 brand_url=new_brand_url.strip(),
                 brand_domain=brand_domain,
@@ -181,8 +189,11 @@ if fetch_clicked:
         booking_urls[hotel.name] = booking_url
 
         if "Expedia" in sources:
-            resolve_status.text(f"Resolving Expedia match for {hotel.name}...")
-            expedia_urls[hotel.name] = resolve_expedia_detail_url(hotel.address, dates[0], dates[0] + timedelta(days=1), guests)
+            if hotel.expedia_url:
+                expedia_urls[hotel.name] = hotel.expedia_url
+            else:
+                resolve_status.text(f"Resolving Expedia match for {hotel.name}...")
+                expedia_urls[hotel.name] = resolve_expedia_detail_url(hotel.address, dates[0], dates[0] + timedelta(days=1), guests)
     resolve_status.empty()
 
     # --- Fetch phase: every (hotel, date, source) combo is independent once

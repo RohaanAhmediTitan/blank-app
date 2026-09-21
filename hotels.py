@@ -23,8 +23,9 @@ from dataclasses import dataclass
 class Hotel:
     name: str
     is_primary: bool
-    address: str  # used for Expedia's address-based search
+    address: str  # used for Expedia's address-based search when expedia_url isn't given
     booking_url: str = ""  # skips Booking.com search step when known
+    expedia_url: str = ""  # skips Expedia's address search when known (see note below)
     brand_name: str = ""
     brand_url: str = ""
     brand_domain: str = ""  # dispatch key for brand_scraper.py's date-param builders
@@ -32,9 +33,18 @@ class Hotel:
 
 HOTELS: list[Hotel] = [
     Hotel(
+        # Both search-based resolutions are confirmed unreliable for this specific hotel
+        # (tested live 2026-09-21): Booking.com's name search matched "Fairfield Inn
+        # Huntsville" — a same-brand hotel on the other side of the country — and
+        # Expedia's address search (sort=DISTANCE) returned only 3 nearby hotels, none of
+        # them this one (it appeared only as a brand-filter checkbox, never as an actual
+        # result). Both URLs below are hardcoded and verified by checking the actual page
+        # content for "250 El Camino Real" / the real PMS report's 86-room count.
         name="Fairfield Inn & Suites San Francisco Airport/Millbrae",
         is_primary=True,
         address="250 El Camino Real, Millbrae, CA 94030",
+        booking_url="https://www.booking.com/hotel/us/sfo-san-francisco.html",
+        expedia_url="https://www.expedia.com/San-Francisco-Hotels-Fairfield-Inn-Suites-By-Marriott-San-Francisco-Airport.h808403.Hotel-Information",
         brand_name="Marriott",
         brand_url="https://www.marriott.com/en-us/hotels/sfome-fairfield-inn-and-suites-san-francisco-airport-millbrae/overview/",
         brand_domain="marriott.com",
@@ -44,6 +54,7 @@ HOTELS: list[Hotel] = [
         is_primary=False,
         address="1177 Airport Blvd, Burlingame, CA 94010",
         booking_url="https://www.booking.com/hotel/us/san-fransisco-airport-burlingame.html",
+        expedia_url="https://www.expedia.com/San-Francisco-Hotels-Crowne-Plaza-San-Francisco-Airport.h28502.Hotel-Information",
         brand_name="IHG",
         brand_url="https://www.ihg.com/crowneplaza/hotels/us/en/burlingame/urlca/hoteldetail",
         brand_domain="ihg.com",
