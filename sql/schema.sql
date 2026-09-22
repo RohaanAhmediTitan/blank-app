@@ -49,10 +49,15 @@ alter table rate_shops enable row level security;
 -- CREATE POLICY IF NOT EXISTS)
 drop policy if exists "anon read client_hotels" on client_hotels;
 drop policy if exists "anon insert client_hotels" on client_hotels;
+drop policy if exists "anon delete client_hotels" on client_hotels;
 drop policy if exists "anon read rate_shops" on rate_shops;
 drop policy if exists "anon insert rate_shops" on rate_shops;
 
 create policy "anon read client_hotels" on client_hotels for select using (true);
 create policy "anon insert client_hotels" on client_hotels for insert with check (true);
+-- Added 2026-09-22: the app's delete-a-hotel button was silently failing —
+-- no DELETE policy existed, so Supabase denied every delete at the database
+-- level (removed the hotel from the UI's session state, never from the row).
+create policy "anon delete client_hotels" on client_hotels for delete using (true);
 create policy "anon read rate_shops" on rate_shops for select using (true);
 create policy "anon insert rate_shops" on rate_shops for insert with check (true);
