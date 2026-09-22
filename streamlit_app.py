@@ -142,12 +142,18 @@ with st.sidebar:
 
     if st.session_state["custom_hotels"]:
         st.caption("Ad-hoc hotels added (persisted if Supabase is connected):")
-        for h in list(st.session_state["custom_hotels"]):
+        for i, h in enumerate(list(st.session_state["custom_hotels"])):
             hcol1, hcol2 = st.columns([5, 1])
             with hcol1:
                 st.caption(f"• {h.name}")
             with hcol2:
-                if st.button("🗑️", key=f"remove_hotel_{h.name}", help=f"Remove {h.name}"):
+                # Index in the key, not just the name — two hotels can share a
+                # name (e.g. added twice by mistake), and Streamlit widget
+                # keys must be unique or the whole app crashes.
+                if st.button("🗑️", key=f"remove_hotel_{i}_{h.name}", help=f"Remove {h.name}"):
+                    # Removes every hotel with this name, including
+                    # duplicates — intentional, since the point is "get rid
+                    # of this one," not "get rid of exactly one copy of it."
                     st.session_state["custom_hotels"] = [
                         x for x in st.session_state["custom_hotels"] if x.name != h.name
                     ]
