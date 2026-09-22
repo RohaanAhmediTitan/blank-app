@@ -67,6 +67,14 @@ def save_client_hotel(
     ).execute()
 
 
+def delete_client_hotel(name: str) -> None:
+    """Remove a client-added hotel by name. No-op if Supabase isn't configured
+    (the caller still removes it from session state either way)."""
+    if not _enabled:
+        return
+    _client.table("client_hotels").delete().eq("name", name).execute()
+
+
 def save_rate_shop_rows(rows: list[dict]) -> None:
     """Persist one fetch's results. `rows` are the same dicts rendered in the grid."""
     if not _enabled or not rows:

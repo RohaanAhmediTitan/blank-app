@@ -141,9 +141,18 @@ with st.sidebar:
             st.success(f"Added {new_name} — will be included in the next fetch.")
 
     if st.session_state["custom_hotels"]:
-        st.caption("Ad-hoc hotels added this session:")
-        for h in st.session_state["custom_hotels"]:
-            st.caption(f"• {h.name}")
+        st.caption("Ad-hoc hotels added (persisted if Supabase is connected):")
+        for h in list(st.session_state["custom_hotels"]):
+            hcol1, hcol2 = st.columns([5, 1])
+            with hcol1:
+                st.caption(f"• {h.name}")
+            with hcol2:
+                if st.button("🗑️", key=f"remove_hotel_{h.name}", help=f"Remove {h.name}"):
+                    st.session_state["custom_hotels"] = [
+                        x for x in st.session_state["custom_hotels"] if x.name != h.name
+                    ]
+                    supabase_client.delete_client_hotel(h.name)
+                    st.rerun()
 
     all_hotels_preview: list[Hotel] = HOTELS + st.session_state["custom_hotels"]
     n_hotels = len(all_hotels_preview)
