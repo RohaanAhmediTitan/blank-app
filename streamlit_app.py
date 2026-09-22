@@ -287,7 +287,14 @@ if "rate_rows" in st.session_state:
             # plain `if error` here misread every genuine sold-out row as a fetch failure.
             label = "Couldn't fetch ⚠️" if has_error else "Sold out"
             title = f' title="{error}"' if has_error else ""
-            return f'<span{title} style="color:#999;">{label}</span>', None
+            url = row.get("url")
+            # Link even when there's no rate, so "Sold out" is checkable against
+            # the live page instead of just having to be taken on faith.
+            if isinstance(url, str) and url:
+                inner = f'<a href="{url}" target="_blank" rel="noopener" style="color:#999;text-decoration:none;">{label} 🔗</a>'
+            else:
+                inner = label
+            return f'<span{title}>{inner}</span>', None
         rate = row["lowest_rate"]
         url = row.get("url")
         text = f"${rate:,.0f}"
