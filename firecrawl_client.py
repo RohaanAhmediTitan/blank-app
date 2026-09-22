@@ -99,7 +99,7 @@ def firecrawl_fetch_html(url: str, wait_for: int | None = None, max_age: int | N
     return html
 
 
-def firecrawl_extract(url: str, schema: dict, prompt: str) -> dict | None:
+def firecrawl_extract(url: str, schema: dict, prompt: str) -> tuple[dict | None, str]:
     """LLM-based structured extraction from one page via Firecrawl.
 
     Uses /v2/scrape with a `json` format entry — the current, synchronous
@@ -107,21 +107,28 @@ def firecrawl_extract(url: str, schema: dict, prompt: str) -> dict | None:
     as of 2026-09-21, was actively rejecting valid URLs with a bogus "All
     provided URLs are invalid" error on every call). This is how
     brand_scraper.py reads a rate off an arbitrary brand-direct booking
-    engine without a hand-written parser per brand. Returns the extracted
-    object, or raises if the page couldn't be scraped at all (e.g. a site
-    whose bot defenses block Firecrawl outright, or a rate-limited account —
-    both real "couldn't reach the page" failures, not "no rate found";
-    brand_scraper.py's caller catches this and puts the message in the row's
-    error field).
+    engine without a hand-written parser per brand.
+
+    Also requests `markdown` in the same call and returns it alongside the
+    extracted object, so the caller can verify the extraction is actually
+    grounded in real page text (confirmed necessary: live-tested on a page
+    with zero pricing content and the model still confidently fabricated a
+    room rate — see brand_scraper.py's evidence check).
+
+    Raises if the page couldn't be scraped at all (e.g. a site whose bot
+    defenses block Firecrawl outright, or a rate-limited account — both real
+    "couldn't reach the page" failures, not "no rate found"; brand_scraper.py's
+    caller catches this and puts the message in the row's error field).
     """
     base = FIRECRAWL_API_URL.rsplit("/scrape", 1)[0]  # .../v2/scrape -> .../v2
     body = _post_with_retry(
         f"{base}/scrape",
         {
             "url": url,
-            "formats": [{"type": "json", "schema": schema, "prompt": prompt}],
+            "formats": [{"type": "json", "schema": schema, "prompt": prompt}, "markdown"],
             "onlyMainContent": False,
         },
         timeout=60,
     )
-    return body.get("data", {}).get("json")
+    data = body.get("data", {})
+    return data.get("json"), data.get("markdown") or ""

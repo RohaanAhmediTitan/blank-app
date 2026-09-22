@@ -16,6 +16,16 @@ whatever it actually saw (and which dates that reflects) rather than fail
 silently. This is the "Own rate not found" / parity-check side of the
 Alert Catalog's Rate Integrity and Parity & Distribution sections — not
 expected to be as reliable as the third-party-site scrapers.
+
+Confirmed live (2026-09-22) that the model will confidently fabricate a
+plausible room rate on a page with zero pricing content — reproduced on
+both Marriott's overview page (fully blocked by Firecrawl's engines, so
+there's no page content at all) and IHG's booking flow (a login/session-gate
+shell with no room results ever loaded). So every extraction now has to cite
+the exact page text it read the rate from, and that citation is verified
+against the actual scraped markdown before the rate is trusted — see
+get_brand_rate's `grounded` check. An extraction that fails this is treated
+as unavailable, not as a real (if unreliable) rate.
 """
 
 from datetime import date
@@ -39,6 +49,12 @@ RATE_SCHEMA = {
             "type": ["string", "null"],
             "description": "The check-in/check-out dates the displayed rate actually applies to, as shown on "
             "the page (may differ from the dates requested if the booking widget ignored the URL params).",
+        },
+        "evidence": {
+            "type": ["string", "null"],
+            "description": "Copy the exact line of text from the page that shows the rate (verbatim, including "
+            "the dollar figure). Required whenever available is true — a rate with no matching text on the page "
+            "cannot be verified and will be discarded.",
         },
     },
     "required": ["available"],
@@ -116,25 +132,39 @@ def get_brand_rate(
         "note which dates it actually applies to in dates_shown. Only set available to false if no rate "
         "figure is visible on the page at all. A room does not cost $0 — if the only number you can find is "
         "$0 or blank (e.g. a 'due at hotel' or deposit line, not the actual room rate), treat that as no rate "
-        "found and set available to false rather than reporting 0."
+        "found and set available to false rather than reporting 0. Do not guess or estimate a plausible-sounding "
+        "rate if you cannot actually find one on the page — many pages here are login walls, marketing pages, or "
+        "session-expired shells with no pricing at all, and reporting a number in that case is worse than saying "
+        "unavailable. Set evidence to the exact page text the rate came from; if you can't quote real text "
+        "containing the number, you don't actually have a rate — set available to false."
     )
     try:
-        data = firecrawl_extract(url, RATE_SCHEMA, prompt)
+        data, page_markdown = firecrawl_extract(url, RATE_SCHEMA, prompt)
     except Exception as exc:  # noqa: BLE001 - surface any extract failure in the grid, demo keeps going
         return {"source": "Brand.com", "url": url, "available": False, "lowest_rate": None, "error": str(exc)}
 
     rate = data.get("lowest_rate") if data else None
-    # Belt-and-suspenders on top of the prompt: the model can still hallucinate
-    # a $0 from a page that shows no real rate. Treat non-positive as invalid
-    # rather than let a $0 render as a real (and always "cheapest") price.
-    if not data or not data.get("available") or not rate or rate <= 0:
+    evidence = (data.get("evidence") or "").strip() if data else ""
+    # Grounding check: live-tested proof the model will otherwise hallucinate a
+    # plausible-looking rate on a page with zero pricing content (confirmed on
+    # both a marketing overview page and a login-gated booking page). Requiring
+    # a verbatim quote and confirming it actually appears in the scraped page
+    # text turns that failure mode from "a confident but fake number" into a
+    # clean "couldn't verify," which is what it actually is.
+    grounded = bool(evidence) and _normalize(evidence) in _normalize(page_markdown)
+    if not data or not data.get("available") or not rate or rate <= 0 or not grounded:
+        error = None
+        if data and data.get("available") and rate and not grounded:
+            error = "Extraction wasn't grounded in the page's actual text (likely hallucinated) — discarded"
+        elif not data:
+            error = "Firecrawl returned no data for this page"
         return {
             "source": "Brand.com",
             "url": url,
             "available": False,
             "lowest_rate": None,
             "room_type": data.get("room_type") if data else None,
-            "error": None if data else "Firecrawl returned no data for this page",
+            "error": error,
         }
 
     return {
@@ -146,3 +176,7 @@ def get_brand_rate(
         "room_type": data.get("room_type"),
         "dates_shown": data.get("dates_shown"),
     }
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.split()).lower()
