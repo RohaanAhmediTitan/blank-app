@@ -26,7 +26,11 @@ from expedia_scraper import get_expedia_rate, resolve_expedia_detail_url
 from hotels import HOTELS, Hotel
 import supabase_client
 
-MAX_WORKERS = 6
+# Lowered from 6 after live testing showed real rate-limit (429) errors under
+# concurrent load, worst for Brand.com since each call there is a full page
+# render + LLM extraction — the most expensive request type competing for
+# the same per-account limit as the faster Booking.com/Expedia calls.
+MAX_WORKERS = 3
 
 # Measured against the live sites (see docs/SESSION_CONTEXT.md): concurrency
 # doesn't help — Firecrawl appears to serialize requests per account/plan, so

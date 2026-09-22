@@ -114,28 +114,34 @@ def get_brand_rate(
         "If the live availability search doesn't reflect those exact dates (e.g. the widget defaulted to "
         "today/tomorrow, or only a marketing 'rates from $X' figure is shown), report that rate anyway and "
         "note which dates it actually applies to in dates_shown. Only set available to false if no rate "
-        "figure is visible on the page at all."
+        "figure is visible on the page at all. A room does not cost $0 — if the only number you can find is "
+        "$0 or blank (e.g. a 'due at hotel' or deposit line, not the actual room rate), treat that as no rate "
+        "found and set available to false rather than reporting 0."
     )
     try:
         data = firecrawl_extract(url, RATE_SCHEMA, prompt)
     except Exception as exc:  # noqa: BLE001 - surface any extract failure in the grid, demo keeps going
         return {"source": "Brand.com", "url": url, "available": False, "lowest_rate": None, "error": str(exc)}
 
-    if not data or not data.get("available"):
+    rate = data.get("lowest_rate") if data else None
+    # Belt-and-suspenders on top of the prompt: the model can still hallucinate
+    # a $0 from a page that shows no real rate. Treat non-positive as invalid
+    # rather than let a $0 render as a real (and always "cheapest") price.
+    if not data or not data.get("available") or not rate or rate <= 0:
         return {
             "source": "Brand.com",
             "url": url,
             "available": False,
             "lowest_rate": None,
             "room_type": data.get("room_type") if data else None,
-            "error": None if data else "Couldn't scrape this page (site may be blocking automated access)",
+            "error": None if data else "Firecrawl returned no data for this page",
         }
 
     return {
         "source": "Brand.com",
         "url": url,
         "available": True,
-        "lowest_rate": data.get("lowest_rate"),
+        "lowest_rate": rate,
         "currency": "USD",
         "room_type": data.get("room_type"),
         "dates_shown": data.get("dates_shown"),
