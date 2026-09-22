@@ -106,6 +106,16 @@ def _dated_url(brand_url: str, brand_domain: str, check_in: date, check_out: dat
     return brand_url + sep + urlencode(builder(check_in.isoformat(), check_out.isoformat(), guests))
 
 
+# Confirmed live (2026-09-21/22), repeatedly: Firecrawl's scraping engines
+# cannot reach marriott.com at all — even a plain content fetch with no
+# extraction 500s with SCRAPE_ALL_ENGINES_FAILED. Since that's now also
+# non-retried at the client level (see firecrawl_client._NON_RETRYABLE_CODES),
+# this domain would still cost one wasted credit per fetch forever; skipping
+# it outright costs nothing instead. Revisit if Firecrawl's engines change —
+# this isn't a permanent architectural limit, just today's observed reality.
+_KNOWN_BLOCKED_DOMAINS = {"marriott.com"}
+
+
 def get_brand_rate(
     brand_url: str,
     brand_domain: str,
@@ -121,6 +131,15 @@ def get_brand_rate(
             "available": False,
             "lowest_rate": None,
             "error": "No brand-direct URL on file for this hotel",
+        }
+
+    if brand_domain in _KNOWN_BLOCKED_DOMAINS:
+        return {
+            "source": "Brand.com",
+            "url": brand_url,
+            "available": False,
+            "lowest_rate": None,
+            "error": f"{brand_domain} confirmed to block Firecrawl outright — skipped to avoid a wasted credit",
         }
 
     url = _dated_url(brand_url, brand_domain, check_in, check_out, guests)

@@ -2,18 +2,23 @@
 
 POST to /v2/scrape for rendered HTML, with 3 retries and backoff on failure.
 
-Production's throttler serializes every call app-wide with a 2s gap because
-it's a single shared API key backing many concurrent users' scrape jobs. This
-POC is a single local demo session, so instead of serializing, we cap
-*concurrent in-flight requests* (via a semaphore) and only stagger request
-*starts* by a small amount — Firecrawl itself handles the actual anti-bot
-rendering against Booking.com/Expedia, so our own client doesn't need to be
-this conservative. Callers get real parallelism via a ThreadPoolExecutor.
+Rate limiting: live-tested 2026-09-22 and hit a real 429 from Firecrawl with
+"Consumed (req/min): 18, Remaining (req/min): 0" — the account's plan caps at
+18 requests/minute. `_RateLimiter` below enforces a sliding-window cap under
+that (see _REQUESTS_PER_MINUTE) proactively, so normal use shouldn't trip the
+429 at all rather than just retrying after the fact.
+
+Retry policy distinguishes worth-retrying (429, timeouts, generic 5xx — all
+transient) from not-worth-retrying (Firecrawl's own SCRAPE_ALL_ENGINES_FAILED
+code, confirmed live to mean "this site's bot defenses block us," e.g.
+marriott.com — retrying that 3x just burns 3x the credits for a result we
+already know won't change).
 """
 
 import os
 import threading
 import time
+from collections import deque
 
 import requests
 from dotenv import load_dotenv
@@ -21,12 +26,48 @@ from dotenv import load_dotenv
 load_dotenv()
 
 FIRECRAWL_API_URL = os.environ.get("FIRECRAWL_API_URL", "https://api.firecrawl.dev/v2/scrape")
-_MIN_START_SPACING_SECONDS = 0.3  # just avoids a thundering-herd burst at t=0
 _MAX_RETRIES = 3
 _RETRY_DELAY_SECONDS = 5.0
 
-_last_request_time = 0.0
-_throttle_lock = threading.Lock()
+# Firecrawl's own cap is 18/min (confirmed live) — stay under it with margin
+# rather than aim right at the edge, since a burst of near-simultaneous
+# requests from multiple worker threads can overshoot a naive check by a
+# request or two.
+_REQUESTS_PER_MINUTE = 14
+
+# Error codes Firecrawl returns for a page it structurally can't reach —
+# not a rate limit, not a transient hiccup, and retrying won't help.
+_NON_RETRYABLE_CODES = {"SCRAPE_ALL_ENGINES_FAILED"}
+
+
+class _RateLimiter:
+    """Sliding-window limiter shared by every call this process makes, so
+    firecrawl_fetch_html and firecrawl_extract (different call sites, same
+    Firecrawl account) can't collectively exceed the plan's real cap."""
+
+    def __init__(self, max_per_minute: int):
+        self._max = max_per_minute
+        self._calls: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def wait_for_slot(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._calls and now - self._calls[0] > 60:
+                    self._calls.popleft()
+                if len(self._calls) < self._max:
+                    self._calls.append(now)
+                    return
+                sleep_for = 60 - (now - self._calls[0]) + 0.05
+            time.sleep(max(sleep_for, 0.05))
+
+
+_rate_limiter = _RateLimiter(_REQUESTS_PER_MINUTE)
+
+
+class _NonRetryable(Exception):
+    """A Firecrawl failure known not to improve on retry — see _NON_RETRYABLE_CODES."""
 
 
 def _get_api_key() -> str:
@@ -40,27 +81,20 @@ def _get_api_key() -> str:
 
 
 def _post_with_retry(url: str, json_body: dict, timeout: int) -> dict:
-    """Shared throttle + retry/backoff for every Firecrawl POST, so both
+    """Shared rate-limiting + retry/backoff for every Firecrawl POST, so both
     firecrawl_fetch_html and firecrawl_extract compete fairly for the same
     per-account rate limit instead of one of them (extract, previously)
-    hitting the API with zero throttling or retries at all. That gap meant
-    a single 429 from concurrent load failed instantly with a misleading
-    generic error instead of retrying like the html path already did.
+    hitting the API with zero throttling or retries at all.
 
     Raises with Firecrawl's own error text on final failure — including the
     literal rate-limit message — instead of masking it, so callers (and
     their tooltips) show what actually happened.
     """
-    global _last_request_time
     headers = {"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"}
 
     last_error: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
-        with _throttle_lock:
-            elapsed = time.monotonic() - _last_request_time
-            if elapsed < _MIN_START_SPACING_SECONDS:
-                time.sleep(_MIN_START_SPACING_SECONDS - elapsed)
-            _last_request_time = time.monotonic()
+        _rate_limiter.wait_for_slot()
 
         try:
             resp = requests.post(url, headers=headers, json=json_body, timeout=timeout)
@@ -69,14 +103,20 @@ def _post_with_retry(url: str, json_body: dict, timeout: int) -> dict:
             resp.raise_for_status()
             body = resp.json()
             if not body.get("success"):
-                raise RuntimeError(body.get("error") or "Firecrawl reported failure with no error message")
+                code = body.get("code")
+                message = body.get("error") or "Firecrawl reported failure with no error message"
+                if code in _NON_RETRYABLE_CODES:
+                    raise _NonRetryable(message)
+                raise RuntimeError(message)
             return body
+        except _NonRetryable:
+            raise  # skip the retry loop entirely — see class docstring
         except Exception as exc:  # noqa: BLE001 - mirrors the TS catch-all + retry
             last_error = exc
             if attempt < _MAX_RETRIES:
-                # Rate limits need real backoff, not just the thundering-herd
-                # spacing above — 429s mean the account is already over
-                # capacity, so back off harder than a one-off transient error.
+                # Rate limits need real backoff on top of the proactive
+                # limiter above (e.g. another process sharing this key) —
+                # back off harder than a one-off transient error.
                 delay = _RETRY_DELAY_SECONDS * (attempt + 1) * (3 if "429" in str(exc) else 1)
                 time.sleep(delay)
 

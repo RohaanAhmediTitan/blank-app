@@ -26,7 +26,11 @@ def search_booking_url(search_text: str, check_in: date, check_out: date, guests
         f"https://www.booking.com/searchresults.en-gb.html?ss={formatted}"
         f"&group_adults={guests}&no_rooms=1&checkin={check_in.isoformat()}&checkout={check_out.isoformat()}"
     )
-    html = firecrawl_fetch_html(search_url, wait_for=3000)
+    # Which URL a hotel *name* resolves to doesn't change hour to hour, so this
+    # is safe to cache (matches Expedia's equivalent search step) — only the
+    # actual rate fetch below needs to stay uncached for the "live, not
+    # canned" claim to hold.
+    html = firecrawl_fetch_html(search_url, wait_for=3000, max_age=172800000)
     soup = BeautifulSoup(html, "html.parser")
 
     for link in soup.select('a[data-testid="title-link"]'):
