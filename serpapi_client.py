@@ -160,7 +160,18 @@ def get_brand_rate_serpapi(
             f"property/date ({len(prices)} third-party sources instead: {sources}...)",
         }
 
-    rate = (official.get("rate_per_night") or {}).get("extracted_lowest")
+    # SerpApi's rate_per_night carries both a tax/fee-inclusive figure
+    # (extracted_lowest) and the base nightly rate (extracted_before_taxes_fees).
+    # Confirmed live 2026-09-29 against marriott.com directly: extracted_lowest
+    # was $620 while the live page showed $529/night — extracted_lowest is the
+    # total-with-taxes number, not a wrong or stale quote. Booking.com and
+    # Expedia's scrapers here both capture the pre-tax headline rate (what
+    # their search grids display; taxes are disclosed separately at
+    # checkout), so Brand.com needs the same base to be a fair parity
+    # comparison — prefer before_taxes_fees, falling back to the inclusive
+    # figure only if SerpApi didn't break it out for this listing.
+    per_night = official.get("rate_per_night") or {}
+    rate = per_night.get("extracted_before_taxes_fees") or per_night.get("extracted_lowest")
     if not rate or rate <= 0:
         return {
             "source": "Brand.com",
