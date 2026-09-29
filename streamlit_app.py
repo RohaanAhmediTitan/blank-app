@@ -12,6 +12,7 @@ the pre-validated set, and surfaces proof-of-liveness (per-row fetch
 timestamps + clickable source links) so results are verifiable, not canned.
 """
 
+import html
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -301,6 +302,17 @@ if "rate_rows" in st.session_state:
     SOURCE_ORDER = ["Booking.com", "Expedia", "Brand.com"]
     present_sources = [s for s in SOURCE_ORDER if s in df["source"].unique()]
 
+    def _safe_href(url) -> str | None:
+        # Anyone can add a hotel via the open add-hotel form (client_hotels'
+        # RLS allows any insert), and its URL fields flow straight into this
+        # raw HTML table's href attributes below — so only allow http(s)
+        # links and escape quotes, rather than trust the string as-is.
+        if not isinstance(url, str) or not url:
+            return None
+        if urlparse(url).scheme not in ("http", "https"):
+            return None
+        return html.escape(url, quote=True)
+
     def _rate_cell(sub: pd.DataFrame) -> tuple[str, float | None]:
         """Returns (html for this cell, numeric rate for cheapest-highlighting)."""
         if sub.empty:
@@ -312,20 +324,20 @@ if "rate_rows" in st.session_state:
             # missing "error" keys with NaN when other rows in the batch do have one, so a
             # plain `if error` here misread every genuine sold-out row as a fetch failure.
             label = "Couldn't fetch ⚠️" if has_error else "Sold out"
-            title = f' title="{error}"' if has_error else ""
-            url = row.get("url")
+            title = f' title="{html.escape(str(error), quote=True)}"' if has_error else ""
+            safe_url = _safe_href(row.get("url"))
             # Link even when there's no rate, so "Sold out" is checkable against
             # the live page instead of just having to be taken on faith.
-            if isinstance(url, str) and url:
-                inner = f'<a href="{url}" target="_blank" rel="noopener" style="color:#999;text-decoration:none;">{label} 🔗</a>'
+            if safe_url:
+                inner = f'<a href="{safe_url}" target="_blank" rel="noopener" style="color:#999;text-decoration:none;">{label} 🔗</a>'
             else:
                 inner = label
             return f'<span{title}>{inner}</span>', None
         rate = row["lowest_rate"]
-        url = row.get("url")
+        safe_url = _safe_href(row.get("url"))
         text = f"${rate:,.0f}"
-        if url:
-            return f'<a href="{url}" target="_blank" rel="noopener" style="text-decoration:none;">{text} 🔗</a>', rate
+        if safe_url:
+            return f'<a href="{safe_url}" target="_blank" rel="noopener" style="text-decoration:none;">{text} 🔗</a>', rate
         return text, rate
 
     header_cells = "".join(f'<th style="text-align:left;padding:6px 12px;">{s}</th>' for s in present_sources)
@@ -346,7 +358,7 @@ if "rate_rows" in st.session_state:
             )
             role = "Primary" if hotel.is_primary else "Competitor"
             html_rows.append(
-                f'<tr><td style="padding:6px 12px;white-space:nowrap;"><b>{hotel.name}</b><br>'
+                f'<tr><td style="padding:6px 12px;white-space:nowrap;"><b>{html.escape(hotel.name)}</b><br>'
                 f'<span style="color:#888;font-size:0.85em;">{role}</span></td>'
                 f'<td style="padding:6px 12px;white-space:nowrap;">{check_in}</td>{cell_html}</tr>'
             )

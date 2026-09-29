@@ -52,6 +52,7 @@ drop policy if exists "anon insert client_hotels" on client_hotels;
 drop policy if exists "anon delete client_hotels" on client_hotels;
 drop policy if exists "anon read rate_shops" on rate_shops;
 drop policy if exists "anon insert rate_shops" on rate_shops;
+drop policy if exists "anon delete rate_shops" on rate_shops;
 
 create policy "anon read client_hotels" on client_hotels for select using (true);
 create policy "anon insert client_hotels" on client_hotels for insert with check (true);
@@ -61,3 +62,7 @@ create policy "anon insert client_hotels" on client_hotels for insert with check
 create policy "anon delete client_hotels" on client_hotels for delete using (true);
 create policy "anon read rate_shops" on rate_shops for select using (true);
 create policy "anon insert rate_shops" on rate_shops for insert with check (true);
+-- Added 2026-09-29: same gap as client_hotels above — a data-sanitization
+-- pass tried to delete junk/test rows from rate_shops and every delete
+-- silently affected 0 rows, because no DELETE policy existed here either.
+create policy "anon delete rate_shops" on rate_shops for delete using (true);
