@@ -143,7 +143,12 @@ def get_expedia_rate(
 
     # Expedia's room list renders client-side after a skeleton placeholder —
     # without a render wait, Firecrawl captures the page before rates populate.
-    detail_html = firecrawl_fetch_html(final_url, wait_for=8000, max_age=172800000)
+    # No max_age here (unlike the search step above): this is the actual
+    # price/availability read shown to the client as a live rate — confirmed
+    # live 2026-09-29 that this had max_age=172800000 (48h) since the original
+    # wrong-hotel-matching fix, letting Firecrawl silently serve up to a
+    # 2-day-old snapshot for the number people were told "isn't cached."
+    detail_html = firecrawl_fetch_html(final_url, wait_for=8000)
     rooms = _parse_detail_rooms(detail_html)
 
     if not rooms:
