@@ -122,11 +122,17 @@ def get_brand_rate_serpapi(
     SerpApi's Google Hotels engine. Same return shape as the old
     brand_scraper.get_brand_rate so callers don't need to change.
 
-    `brand_url` (the hotel's own on-file official-site link, if known) is
-    used as the displayed URL in preference to Google's redirect link, which
-    routes through ad-tracking networks (koddi/doubleclick) before landing
-    on the brand's site — functionally fine, but the wrong thing to hand a
-    client as "click here to verify.\""""
+    The displayed URL is Google's own redirect link for this exact quote
+    (`official.get("link")`) rather than the hotel's static overview page —
+    it routes through an ad-tracking network (koddi/doubleclick) before
+    landing on the brand's real, dated availability page, which looks less
+    clean but is the only version that's actually checkable: the URL itself
+    carries the same check-in/check-out/guests we asked for (confirmed live
+    2026-09-29 by inspecting it), so clicking 🔗 reproduces the exact quote
+    instead of dropping onto a generic page with no dates set. `brand_url`
+    (the hotel's on-file static link) is kept only as a fallback for the
+    rare case Google's response has no link at all.
+    """
     try:
         prices, matched_name = _resolve_prices(hotel_name, address, check_in, check_out, guests)
     except Exception as exc:  # noqa: BLE001 - surface any lookup failure in the grid, demo keeps going
@@ -158,7 +164,7 @@ def get_brand_rate_serpapi(
     if not rate or rate <= 0:
         return {
             "source": "Brand.com",
-            "url": brand_url or official.get("link"),
+            "url": official.get("link") or brand_url,
             "available": False,
             "lowest_rate": None,
             "error": "Official listing found but no usable rate for this date",
@@ -166,7 +172,7 @@ def get_brand_rate_serpapi(
 
     return {
         "source": "Brand.com",
-        "url": brand_url or official.get("link"),
+        "url": official.get("link") or brand_url,
         "available": True,
         "lowest_rate": rate,
         "currency": "USD",
