@@ -1,6 +1,6 @@
 """SerpApi Google Hotels client — sole rate source for every third-party
 source in THIRD_PARTY_SOURCES (Booking.com, Expedia, Agoda, Priceline,
-Hotels.com, trivago) plus Brand.com.
+Hotels.com) plus Brand.com.
 
 Started as brand.com-only (see git history), which hit two Firecrawl dead
 ends: Marriott blocks its render engines outright (SCRAPE_ALL_ENGINES_FAILED
@@ -157,7 +157,6 @@ THIRD_PARTY_SOURCES: list[tuple[str, str]] = [
     ("Agoda", "agoda"),
     ("Priceline", "priceline"),
     ("Hotels.com", "hotels.com"),
-    ("trivago", "trivago"),
 ]
 
 ALL_SOURCE_NAMES: list[str] = [name for name, _ in THIRD_PARTY_SOURCES] + ["Brand.com"]
@@ -207,9 +206,35 @@ def get_all_source_rates(
     fallback_urls = {"Booking.com": booking_url, "Expedia": expedia_url}
     official_entry = next((p for p in prices if p.get("official")), None)
 
+    # Direct name match for each configured source first.
+    matched: dict[str, dict | None] = {
+        name: _find_by_keyword(prices, keyword) for name, keyword in THIRD_PARTY_SOURCES
+    }
+    claimed_ids = {id(entry) for entry in matched.values() if entry is not None}
+
+    # Gap-fill: a named source with no direct match (e.g. no Booking.com
+    # listing for this property/date) borrows the cheapest still-unclaimed
+    # OTA listing Google *does* have for that night, rather than reporting
+    # "couldn't fetch" when real third-party data exists, just not from that
+    # specific site. Never borrows the brand's own official listing — that's
+    # a different kind of rate, not an OTA substitute. Every borrow is
+    # tagged in `fallback_from` so the grid can label it honestly (this is
+    # still 100% within the same trusted SerpApi data — not a fallback to
+    # the discredited direct-scraping approach).
+    unclaimed = sorted(
+        (p for p in prices if not p.get("official") and id(p) not in claimed_ids and _rate_from_entry(p)),
+        key=lambda p: _rate_from_entry(p) or float("inf"),
+    )
+    fallback_from: dict[str, str] = {}
+    for name, _keyword in THIRD_PARTY_SOURCES:
+        if matched[name] is None and unclaimed:
+            substitute = unclaimed.pop(0)
+            claimed_ids.add(id(substitute))
+            matched[name] = substitute
+            fallback_from[name] = substitute.get("source") or "another source"
+
     lookups: list[tuple[str, dict | None, str, str]] = [
-        (name, _find_by_keyword(prices, keyword), fallback_urls.get(name, ""), name)
-        for name, keyword in THIRD_PARTY_SOURCES
+        (name, matched[name], fallback_urls.get(name, ""), name) for name, _keyword in THIRD_PARTY_SOURCES
     ]
     lookups.append(("Brand.com", official_entry, brand_url, f"official {brand_name or 'brand'}-direct"))
 
@@ -222,8 +247,9 @@ def get_all_source_rates(
                 "url": None,
                 "available": False,
                 "lowest_rate": None,
-                "error": f"Google Hotels has no {missing_label} listing for this property/date "
-                f"({len(prices)} sources found instead: {sources}...)",
+                "error": f"Google Hotels has no {missing_label} listing for this property/date, and no "
+                f"other unused OTA listing was available to substitute ({len(prices)} sources found: "
+                f"{sources}...)",
             }
             continue
 
@@ -239,7 +265,7 @@ def get_all_source_rates(
             }
             continue
 
-        results[key] = {
+        result = {
             "source": key,
             "url": url,
             "available": True,
@@ -247,5 +273,8 @@ def get_all_source_rates(
             "currency": "USD",
             "room_type": None,
         }
+        if key in fallback_from:
+            result["fallback_from"] = fallback_from[key]
+        results[key] = result
 
     return results

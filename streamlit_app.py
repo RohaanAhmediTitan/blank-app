@@ -245,6 +245,11 @@ def _render_results(rows: list[dict], all_hotels: list[Hotel], completed_at: str
         rate = row["lowest_rate"]
         safe_url = _safe_href(row.get("url"))
         text = f"${rate:,.0f}"
+        fallback_from = row.get("fallback_from")
+        # NaN-safe for the same reason as `error` above — pandas pads this
+        # column with NaN on every row that didn't need a fallback.
+        if pd.notna(fallback_from) and fallback_from:
+            text += f' <span style="color:#999;font-size:0.8em;">(via {html.escape(str(fallback_from))})</span>'
         if safe_url:
             return f'<a href="{safe_url}" target="_blank" rel="noopener" style="text-decoration:none;">{text} 🔗</a>', rate
         return text, rate
