@@ -96,7 +96,9 @@ with st.sidebar:
         default=["Booking.com"],
         help="Expedia needs an 8s render wait to avoid its loading skeleton. Brand.com (rate parity — "
         "the hotel's own official-site rate) depends on Google Hotels having that brand's price listed "
-        "for this property and date — expect gaps when a brand doesn't participate in Google's feed.",
+        "for this property and date — expect gaps when a brand doesn't participate in Google's feed. "
+        "It's also the public/Best Available Rate, not a loyalty-member discount — the same convention "
+        "industry rate-shopping tools use, since parity contracts are scoped to the public rate.",
     )
 
     st.divider()
@@ -301,7 +303,10 @@ def _render_results(rows: list[dict], all_hotels: list[Hotel], completed_at: str
         st.caption(
             "Mirrors the Alert Catalog's Parity violation rule: a third-party site undercutting the brand-direct rate. "
             "Brand-direct reads depend on Google Hotels having that brand's price for this property/date "
-            "(see brand_scraper.py) — treat gaps as directional, and check the source URLs before acting on one."
+            "(see brand_scraper.py) — treat gaps as directional, and check the source URLs before acting on one. "
+            "Brand.com shown here is the public/Best Available Rate, matching the convention rate-shopping tools "
+            "use for parity checks — it will run lower than a brand site's own headline price if that site "
+            "defaults to a loyalty-member discount (e.g. Marriott's free-enrollment rate)."
         )
         available = df[df["available"] == True]  # noqa: E712 - pandas bool comparison, not identity
         brand_rows = available[available["source"] == "Brand.com"][["Hotel", "Date", "lowest_rate", "url"]]
