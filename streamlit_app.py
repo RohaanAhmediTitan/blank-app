@@ -21,27 +21,21 @@ from urllib.parse import urlparse
 import pandas as pd
 import streamlit as st
 
-from booking_scraper import get_booking_rate, search_booking_url
-from brand_scraper import get_brand_rate
-from expedia_scraper import get_expedia_rate, resolve_expedia_detail_url
 from hotels import HOTELS, Hotel
+from serpapi_client import get_all_source_rates
 import supabase_client
 
-# Lowered from 6 after live testing showed real rate-limit (429) errors under
-# concurrent load from Booking.com/Expedia, which still go through Firecrawl
-# and share its per-account rate limit. Brand.com now goes through SerpApi
-# instead (a separate account/limit entirely — see brand_scraper.py), so it
-# no longer competes for this same budget.
-MAX_WORKERS = 3
+# All three sources now come from one SerpApi call per hotel/date (see
+# serpapi_client.get_all_source_rates) instead of three separate
+# Firecrawl-backed scrapes, so there's no longer a shared per-account
+# rate limit to protect against with a low worker count — this just bounds
+# how many concurrent requests hit SerpApi at once.
+MAX_WORKERS = 6
 
-# Measured against the live sites (see docs/SESSION_CONTEXT.md): concurrency
-# doesn't help for Firecrawl-backed calls — Firecrawl appears to serialize
-# requests per account/plan, so these are real per-call wall-clock costs, not
-# something threading hides.
-SECONDS_PER_BOOKING_CALL = 14
-SECONDS_PER_EXPEDIA_RESOLVE = 8  # once per hotel, not per date
-SECONDS_PER_EXPEDIA_DETAIL_CALL = 18
-SECONDS_PER_BRAND_CALL = 4  # plain REST call via SerpApi, not a page render + LLM extraction
+# Plain REST calls via SerpApi, not a page render + LLM extraction or
+# hand-parsed HTML — measured against the live sites, one call per
+# hotel/date returns all three sources at once.
+SECONDS_PER_HOTEL_DATE_CALL = 4
 
 st.set_page_config(page_title="RevRadar Rate Shop POC", layout="wide")
 st.title("RevRadar — Live Rate Comparison POC")
@@ -94,11 +88,10 @@ with st.sidebar:
         "Sources",
         ["Booking.com", "Expedia", "Brand.com"],
         default=["Booking.com"],
-        help="Expedia needs an 8s render wait to avoid its loading skeleton. Brand.com (rate parity — "
-        "the hotel's own official-site rate) depends on Google Hotels having that brand's price listed "
-        "for this property and date — expect gaps when a brand doesn't participate in Google's feed. "
-        "It's also the public/Best Available Rate, not a loyalty-member discount — the same convention "
-        "industry rate-shopping tools use, since parity contracts are scoped to the public rate.",
+        help="All three come from the same Google Hotels lookup per hotel/date — expect gaps whenever "
+        "a source doesn't have a listing for that property/date in Google's feed. Rates shown are the "
+        "public/Best Available Rate, not a loyalty-member discount — the same convention industry "
+        "rate-shopping tools use, since parity contracts are scoped to the public rate.",
     )
 
     st.divider()
@@ -108,13 +101,15 @@ with st.sidebar:
         st.markdown(guide_path.read_text(encoding="utf-8"))
     with st.form("add_hotel_form", clear_on_submit=True):
         new_name = st.text_input("Hotel name")
-        new_city = st.text_input("City, State (used to search Booking.com)")
-        new_booking_url = st.text_input("Booking.com URL (optional — skips search if given)")
-        new_address = st.text_input("Street address (optional — improves Expedia match)")
+        new_city = st.text_input("City, State (used to build the address below if left blank)")
+        new_booking_url = st.text_input(
+            "Booking.com URL (optional — used as a display link only if Google Hotels' own listing has none)"
+        )
+        new_address = st.text_input("Street address (recommended — this is what's used to look up the hotel)")
         new_expedia_url = st.text_input(
-            "Expedia URL (optional — skips search if given)",
-            help="Expedia's address search sometimes matches the wrong nearby hotel instead of this one — "
-            "giving a direct URL avoids that entirely, same reason Booking.com URL is offered above.",
+            "Expedia URL (optional — used as a display link only if Google Hotels' own listing has none)",
+            help="All three rates are looked up together by hotel name + address via Google Hotels, so a "
+            "precise address is what actually determines a correct match, not these URLs.",
         )
         new_brand_name = st.text_input("Brand (optional, e.g. Hilton, Marriott)")
         new_brand_url = st.text_input("Brand-direct booking page URL (optional — enables rate parity check)")
@@ -167,17 +162,10 @@ with st.sidebar:
 
     all_hotels_preview: list[Hotel] = HOTELS + st.session_state["custom_hotels"]
     n_hotels = len(all_hotels_preview)
-    est_seconds = 0.0
-    if "Booking.com" in sources:
-        est_seconds += n_hotels * num_nights * SECONDS_PER_BOOKING_CALL
-    if "Expedia" in sources:
-        est_seconds += n_hotels * SECONDS_PER_EXPEDIA_RESOLVE  # once per hotel
-        est_seconds += n_hotels * num_nights * SECONDS_PER_EXPEDIA_DETAIL_CALL
-    if "Brand.com" in sources:
-        est_seconds += n_hotels * num_nights * SECONDS_PER_BRAND_CALL
-    # No concurrency discount: measured testing showed Firecrawl mostly
-    # serializes our calls on their end regardless of our thread pool size,
-    # so plan around this worst-case serial estimate, not an optimistic one.
+    # One SerpApi call per hotel/date returns all three sources at once, so
+    # the estimate no longer varies by which sources are selected — only
+    # whether at least one is.
+    est_seconds = (n_hotels * num_nights * SECONDS_PER_HOTEL_DATE_CALL) if sources else 0.0
     est_minutes = est_seconds / 60
     st.caption(
         f"Estimated fetch time for {n_hotels} hotels × {num_nights} night(s): "
@@ -303,7 +291,7 @@ def _render_results(rows: list[dict], all_hotels: list[Hotel], completed_at: str
         st.caption(
             "Mirrors the Alert Catalog's Parity violation rule: a third-party site undercutting the brand-direct rate. "
             "Brand-direct reads depend on Google Hotels having that brand's price for this property/date "
-            "(see brand_scraper.py) — treat gaps as directional, and check the source URLs before acting on one. "
+            "(see serpapi_client.py) — treat gaps as directional, and check the source URLs before acting on one. "
             "Brand.com shown here is the public/Best Available Rate, matching the convention rate-shopping tools "
             "use for parity checks — it will run lower than a brand site's own headline price if that site "
             "defaults to a loyalty-member discount (e.g. Marriott's free-enrollment rate)."
@@ -340,80 +328,41 @@ def _render_results(rows: list[dict], all_hotels: list[Hotel], completed_at: str
 if fetch_clicked:
     dates = [start_date + timedelta(days=i) for i in range(num_nights)]
 
-    # --- Resolve phase: figure out each hotel's URL/detail-page ONCE, not per
-    # date. Re-resolving Expedia's hotel search on every single date was the
-    # single biggest source of wasted time (2x the calls for no benefit).
-    resolve_status = st.empty()
-    booking_urls: dict[str, str] = {}
-    expedia_urls: dict[str, str | None] = {}
-    for hotel in all_hotels:
-        booking_url = hotel.booking_url
-        if "Booking.com" in sources and not booking_url:
-            resolve_status.text(f"Resolving Booking.com match for {hotel.name}...")
-            booking_url = search_booking_url(hotel.name, dates[0], dates[0] + timedelta(days=1), guests) or ""
-        booking_urls[hotel.name] = booking_url
-
-        if "Expedia" in sources:
-            if hotel.expedia_url:
-                expedia_urls[hotel.name] = hotel.expedia_url
-            else:
-                resolve_status.text(f"Resolving Expedia match for {hotel.name}...")
-                expedia_urls[hotel.name] = resolve_expedia_detail_url(hotel.address, dates[0], dates[0] + timedelta(days=1), guests)
-    resolve_status.empty()
-
-    # --- Fetch phase: every (hotel, date, source) combo is independent once
-    # resolved above, so run them concurrently instead of one at a time.
-    def _fetch_booking(hotel: Hotel, check_in: date) -> dict:
-        check_out = check_in + timedelta(days=1)
-        booking_url = booking_urls[hotel.name]
-        if booking_url:
-            try:
-                result = get_booking_rate(booking_url, check_in, check_out, guests)
-            except Exception as exc:  # noqa: BLE001 - surface any scrape failure in the grid, demo keeps going
-                result = {"source": "Booking.com", "url": booking_url, "available": False, "lowest_rate": None, "error": str(exc)}
-        else:
-            result = {"source": "Booking.com", "url": None, "available": False, "lowest_rate": None, "error": "No Booking.com match found"}
-        return {"Hotel": hotel.name, "Date": check_in, "Fetched at": datetime.now().strftime("%H:%M:%S"), **result}
-
-    def _fetch_expedia(hotel: Hotel, check_in: date) -> dict:
+    # One SerpApi call per hotel/date returns Booking.com, Expedia, and
+    # Brand.com together (see serpapi_client.get_all_source_rates) — no
+    # separate resolve phase needed (that was only ever for finding each
+    # hotel's Booking.com/Expedia URL before scraping it directly), and no
+    # per-source job type either, since all three come from one lookup.
+    def _fetch_hotel_date(hotel: Hotel, check_in: date) -> list[dict]:
         check_out = check_in + timedelta(days=1)
         try:
-            result = get_expedia_rate(hotel.address, check_in, check_out, guests, detail_url=expedia_urls.get(hotel.name))
-        except Exception as exc:  # noqa: BLE001
-            result = {"source": "Expedia", "url": None, "available": False, "lowest_rate": None, "error": str(exc)}
-        return {"Hotel": hotel.name, "Date": check_in, "Fetched at": datetime.now().strftime("%H:%M:%S"), **result}
-
-    def _fetch_brand(hotel: Hotel, check_in: date) -> dict:
-        check_out = check_in + timedelta(days=1)
-        try:
-            result = get_brand_rate(
+            by_source = get_all_source_rates(
                 hotel.name,
                 hotel.address,
-                hotel.brand_name,
-                hotel.brand_domain,
                 check_in,
                 check_out,
                 guests,
+                brand_name=hotel.brand_name,
+                booking_url=hotel.booking_url,
+                expedia_url=hotel.expedia_url,
                 brand_url=hotel.brand_url,
             )
-        except Exception as exc:  # noqa: BLE001
-            result = {"source": "Brand.com", "url": hotel.brand_url or None, "available": False, "lowest_rate": None, "error": str(exc)}
-        return {"Hotel": hotel.name, "Date": check_in, "Fetched at": datetime.now().strftime("%H:%M:%S"), **result}
+        except Exception as exc:  # noqa: BLE001 - surface any lookup failure in the grid, demo keeps going
+            error = str(exc)
+            by_source = {
+                key: {"source": key, "url": None, "available": False, "lowest_rate": None, "error": error}
+                for key in ("Booking.com", "Expedia", "Brand.com")
+            }
+        fetched_at = datetime.now().strftime("%H:%M:%S")
+        return [
+            {"Hotel": hotel.name, "Date": check_in, "Fetched at": fetched_at, **by_source[source]}
+            for source in sources
+        ]
 
     # Grouped by date (not one flat list) so each date's jobs can be waited
     # on and rendered as its own batch below — the client sees nights land
     # one at a time instead of a blank grid until every date is done.
-    jobs_by_date: dict[date, list[tuple]] = {}
-    for check_in in dates:
-        date_jobs = []
-        for hotel in all_hotels:
-            if "Booking.com" in sources:
-                date_jobs.append((_fetch_booking, hotel, check_in))
-            if "Expedia" in sources:
-                date_jobs.append((_fetch_expedia, hotel, check_in))
-            if "Brand.com" in sources:
-                date_jobs.append((_fetch_brand, hotel, check_in))
-        jobs_by_date[check_in] = date_jobs
+    jobs_by_date: dict[date, list[Hotel]] = {check_in: list(all_hotels) for check_in in dates}
 
     total_calls = sum(len(v) for v in jobs_by_date.values())
     rows: list[dict] = []
@@ -423,17 +372,17 @@ if fetch_clicked:
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for check_in in dates:
-            date_jobs = jobs_by_date[check_in]
-            if not date_jobs:
+            date_hotels = jobs_by_date[check_in]
+            if not date_hotels:
                 continue
-            futures = {executor.submit(fn, hotel, ci): (hotel, ci) for fn, hotel, ci in date_jobs}
+            futures = {executor.submit(_fetch_hotel_date, hotel, check_in): hotel for hotel in date_hotels}
             for future in as_completed(futures):
-                hotel, ci = futures[future]
-                rows.append(future.result())
+                hotel = futures[future]
+                rows.extend(future.result())
                 done += 1
-                progress.progress(done / max(total_calls, 1), text=f"Fetched {done}/{total_calls} — last: {hotel.name} — {ci}")
-            # This date is fully in (every hotel/source for it) — show it now
-            # rather than waiting for every remaining date too.
+                progress.progress(done / max(total_calls, 1), text=f"Fetched {done}/{total_calls} — last: {hotel.name} — {check_in}")
+            # This date is fully in (every hotel for it) — show it now rather
+            # than waiting for every remaining date too.
             with results_area.container():
                 _render_results(rows, all_hotels, live=True)
 

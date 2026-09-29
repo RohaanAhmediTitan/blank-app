@@ -33,7 +33,7 @@ you'll see the "session-only" warning banner in the app instead of "connected to
 
 This is the free option that fits best here: it's built for exactly this (a Streamlit app on a public URL), needs
 no server management, deploys straight from a GitHub repo, and has a built-in secrets manager so
-`FIRECRAWL_API_KEY`/`SERPAPI_KEY`/`SUPABASE_URL`/`SUPABASE_KEY` never touch the repo itself.
+`SERPAPI_KEY`/`SUPABASE_URL`/`SUPABASE_KEY` never touch the repo itself.
 
 1. Push this project to a GitHub repo (the `scraping-poc/` folder needs to be reachable — either its own repo, or
    this repo with `scraping-poc/streamlit_app.py` as the entry point).
@@ -41,13 +41,12 @@ no server management, deploys straight from a GitHub repo, and has a built-in se
 3. Pick the repo/branch, set **Main file path** to `scraping-poc/streamlit_app.py`.
 4. Before or after first deploy, open **App settings → Secrets** and paste:
    ```toml
-   FIRECRAWL_API_KEY = "fc-..."
    SERPAPI_KEY = "..."
    SUPABASE_URL = "https://xxxx.supabase.co"
    SUPABASE_KEY = "eyJ..."
    ```
-   Streamlit injects these as environment variables at runtime — `firecrawl_client.py`, `serpapi_client.py`, and
-   `supabase_client.py` all read them via `os.environ`, same as `.env` locally, so no code changes are needed between local and
+   Streamlit injects these as environment variables at runtime — `serpapi_client.py` and `supabase_client.py`
+   both read them via `os.environ`, same as `.env` locally, so no code changes are needed between local and
    deployed.
 5. Deploy. You get a URL like `https://<something>.streamlit.app` to hand to the client.
 

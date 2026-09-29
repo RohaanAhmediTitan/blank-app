@@ -1,15 +1,25 @@
-"""SerpApi Google Hotels client — brand.com ("official site") rate lookup.
+"""SerpApi Google Hotels client — sole rate source for Booking.com, Expedia,
+and Brand.com.
 
-Replaces the earlier Firecrawl-based approach in brand_scraper.py, which hit
-two dead ends: Marriott blocks Firecrawl's render engines outright
-(SCRAPE_ALL_ENGINES_FAILED on every attempt), and IHG's booking flow is a
-login-gated shell Firecrawl can render but that has no room results ever
-loaded. SerpApi returns Google's own structured price data instead of an LLM
-reading a rendered page, so there's no hallucination risk to guard against
-here, and Google's crawl reaches sites Firecrawl's engines can't (confirmed
-live 2026-09-29: Marriott shows up fine through this path).
+Started as brand.com-only (see git history), which hit two Firecrawl dead
+ends: Marriott blocks its render engines outright (SCRAPE_ALL_ENGINES_FAILED
+on every attempt), and IHG's booking flow is a login-gated shell with no room
+results to read. SerpApi returns Google's own structured price data instead
+of an LLM reading a rendered page, so there's no hallucination risk, and
+Google's crawl reaches sites Firecrawl's engines can't.
 
-Response shape, confirmed live against both demo hotels (2026-09-29):
+Booking.com and Expedia moved here too (2026-09-29) after direct Firecrawl
+scraping of Booking.com was caught returning a different, lower price than
+what a real browser saw for the identical hotel/date/room — confirmed live,
+not a parsing bug (the correct room row was being read; the served content
+itself differed, most likely Booking.com treating the automated/datacenter
+request differently). SerpApi's figure for the same hotel/date matched the
+real page exactly. No fallback to the old Firecrawl-based scrapers: if
+Google's feed doesn't have a source for a given property/date, that source
+reports unavailable rather than falling back to a mechanism just shown to be
+untrustworthy.
+
+Response shape, confirmed live (2026-09-29):
   - A specific enough query (name + full address) sometimes gets Google to
     resolve straight to one property, returning its full detail payload —
     including a top-level `prices` array — in a single call.
@@ -17,17 +27,31 @@ Response shape, confirmed live against both demo hotels (2026-09-29):
     candidates), each with only a `property_token`; getting `prices` then
     needs a second call with that token (and the same `q`, which SerpApi
     requires even for a token-based lookup).
-  - Each entry in `prices` covers one source (an OTA, a deals aggregator,
-    or the brand's own site) with a `rate_per_night`. The brand's own
-    listing is marked `"official": true` — confirmed present the same way
-    for both Marriott and IHG — which is a far more reliable way to find it
-    than matching brand name/domain against `source`, since `source` for the
-    official entry is just the property's own display name (e.g. "Fairfield
-    by Marriott Inn & Suites..."), not a domain or brand string.
+  - Each entry in `prices` covers one source (an OTA, a deals aggregator, or
+    the brand's own site) with a `rate_per_night`. The brand's own listing is
+    marked `"official": true` — far more reliable than matching brand
+    name/domain against `source`, since `source` for the official entry is
+    just the property's own display name (e.g. "Fairfield by Marriott Inn &
+    Suites..."), not a domain or brand string. Booking.com/Expedia entries
+    are matched by a plain substring on `source` instead (seen as both
+    "Expedia.com" and "Expedia.co.uk" across properties).
+  - `rate_per_night` carries both a tax/fee-inclusive figure
+    (extracted_lowest) and the base nightly rate
+    (extracted_before_taxes_fees). Confirmed live against marriott.com
+    directly: extracted_lowest read $620 while the live page showed
+    $529/night before tax — extracted_lowest is the inclusive total, not a
+    wrong number. All three sources here use before_taxes_fees (falling back
+    to the inclusive figure only if a listing doesn't break it out), matching
+    the public/Best Available Rate convention industry rate-shopping tools
+    use for parity comparisons.
+
+One call per hotel/date returns all three sources at once (they're all in
+the same `prices` array), so callers should fetch once via
+`get_all_source_rates` rather than querying per source.
 
 Coverage is inherently partial: a miss here means Google's hotel-price feed
-doesn't have an official listing for this property/date, not necessarily
-that no rate exists.
+doesn't have a listing for this source/property/date, not necessarily that
+no rate exists.
 """
 
 import os
@@ -108,84 +132,95 @@ def _resolve_prices(
     return detail.get("prices") or [], detail.get("name", best_name)
 
 
-def get_brand_rate_serpapi(
+def _find_by_keyword(prices: list[dict], keyword: str) -> dict | None:
+    kw = keyword.lower()
+    return next((p for p in prices if kw in (p.get("source") or "").lower()), None)
+
+
+def _rate_from_entry(entry: dict) -> float | None:
+    per_night = entry.get("rate_per_night") or {}
+    return per_night.get("extracted_before_taxes_fees") or per_night.get("extracted_lowest")
+
+
+def get_all_source_rates(
     hotel_name: str,
     address: str,
-    brand_name: str,
-    brand_domain: str,
     check_in: date,
     check_out: date,
     guests: int = 2,
+    brand_name: str = "",
+    booking_url: str = "",
+    expedia_url: str = "",
     brand_url: str = "",
-) -> dict:
-    """Fetch the brand-direct ("official site") rate for one hotel/date via
-    SerpApi's Google Hotels engine. Same return shape as the old
-    brand_scraper.get_brand_rate so callers don't need to change.
+) -> dict[str, dict]:
+    """One SerpApi lookup per hotel/date, returning Booking.com, Expedia, and
+    Brand.com all at once — Google's Hotels feed already lists every source
+    for a property in the same response, so there's no reason to call the
+    API three times for data that comes back in one call.
 
-    The displayed URL is Google's own redirect link for this exact quote
-    (`official.get("link")`) rather than the hotel's static overview page —
-    it routes through an ad-tracking network (koddi/doubleclick) before
-    landing on the brand's real, dated availability page, which looks less
-    clean but is the only version that's actually checkable: the URL itself
-    carries the same check-in/check-out/guests we asked for (confirmed live
-    2026-09-29 by inspecting it), so clicking 🔗 reproduces the exact quote
-    instead of dropping onto a generic page with no dates set. `brand_url`
-    (the hotel's on-file static link) is kept only as a fallback for the
-    rare case Google's response has no link at all.
+    Each `*_url` fallback is used as the displayed link only if Google's own
+    entry has none — where Google does have a link, it's preferred, since
+    (for Brand.com, confirmed live) it's a dated redirect that reproduces the
+    exact quote, not a generic overview page with no dates set.
     """
     try:
         prices, matched_name = _resolve_prices(hotel_name, address, check_in, check_out, guests)
     except Exception as exc:  # noqa: BLE001 - surface any lookup failure in the grid, demo keeps going
-        return {"source": "Brand.com", "url": None, "available": False, "lowest_rate": None, "error": str(exc)}
+        error = str(exc)
+        return {
+            key: {"source": key, "url": None, "available": False, "lowest_rate": None, "error": error}
+            for key in ("Booking.com", "Expedia", "Brand.com")
+        }
 
     if not prices:
         note = f" (top match was '{matched_name}')" if matched_name else ""
+        error = f"Couldn't confidently match this hotel in Google Hotels{note}"
         return {
-            "source": "Brand.com",
-            "url": None,
-            "available": False,
-            "lowest_rate": None,
-            "error": f"Couldn't confidently match this hotel in Google Hotels{note}",
+            key: {"source": key, "url": None, "available": False, "lowest_rate": None, "error": error}
+            for key in ("Booking.com", "Expedia", "Brand.com")
         }
 
-    official = next((p for p in prices if p.get("official")), None)
-    if not official:
-        sources = ", ".join(p.get("source", "?") for p in prices[:5])
-        return {
-            "source": "Brand.com",
-            "url": None,
-            "available": False,
-            "lowest_rate": None,
-            "error": f"Google Hotels has no official {brand_name or 'brand'}-direct listing for this "
-            f"property/date ({len(prices)} third-party sources instead: {sources}...)",
+    booking_entry = _find_by_keyword(prices, "booking")
+    expedia_entry = _find_by_keyword(prices, "expedia")
+    official_entry = next((p for p in prices if p.get("official")), None)
+
+    results: dict[str, dict] = {}
+    for key, entry, fallback_url, missing_label in (
+        ("Booking.com", booking_entry, booking_url, "Booking.com"),
+        ("Expedia", expedia_entry, expedia_url, "Expedia"),
+        ("Brand.com", official_entry, brand_url, f"official {brand_name or 'brand'}-direct"),
+    ):
+        if not entry:
+            sources = ", ".join(p.get("source", "?") for p in prices[:5])
+            results[key] = {
+                "source": key,
+                "url": None,
+                "available": False,
+                "lowest_rate": None,
+                "error": f"Google Hotels has no {missing_label} listing for this property/date "
+                f"({len(prices)} sources found instead: {sources}...)",
+            }
+            continue
+
+        url = entry.get("link") or fallback_url
+        rate = _rate_from_entry(entry)
+        if not rate or rate <= 0:
+            results[key] = {
+                "source": key,
+                "url": url,
+                "available": False,
+                "lowest_rate": None,
+                "error": "Listing found but no usable rate for this date",
+            }
+            continue
+
+        results[key] = {
+            "source": key,
+            "url": url,
+            "available": True,
+            "lowest_rate": rate,
+            "currency": "USD",
+            "room_type": None,
         }
 
-    # SerpApi's rate_per_night carries both a tax/fee-inclusive figure
-    # (extracted_lowest) and the base nightly rate (extracted_before_taxes_fees).
-    # Confirmed live 2026-09-29 against marriott.com directly: extracted_lowest
-    # was $620 while the live page showed $529/night — extracted_lowest is the
-    # total-with-taxes number, not a wrong or stale quote. Booking.com and
-    # Expedia's scrapers here both capture the pre-tax headline rate (what
-    # their search grids display; taxes are disclosed separately at
-    # checkout), so Brand.com needs the same base to be a fair parity
-    # comparison — prefer before_taxes_fees, falling back to the inclusive
-    # figure only if SerpApi didn't break it out for this listing.
-    per_night = official.get("rate_per_night") or {}
-    rate = per_night.get("extracted_before_taxes_fees") or per_night.get("extracted_lowest")
-    if not rate or rate <= 0:
-        return {
-            "source": "Brand.com",
-            "url": official.get("link") or brand_url,
-            "available": False,
-            "lowest_rate": None,
-            "error": "Official listing found but no usable rate for this date",
-        }
-
-    return {
-        "source": "Brand.com",
-        "url": official.get("link") or brand_url,
-        "available": True,
-        "lowest_rate": rate,
-        "currency": "USD",
-        "room_type": None,
-    }
+    return results

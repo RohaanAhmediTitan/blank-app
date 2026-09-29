@@ -10,10 +10,14 @@ compset ("Data at a Glance_SFOAB_11092026.xlsx"), trimmed down from the full
 7-competitor set for a smaller demo. Addresses and brand-site URLs verified
 by web search on 2026-09-21.
 
-`brand_url` + `brand_domain` are used by brand_scraper.py for the
-"rate parity" check (the hotel's own official-site rate, alongside
-Booking.com/Expedia) — see PLAN.md's original scope note that this is the
-hardest scraping problem and the most compelling part of the demo.
+`brand_url` is used by serpapi_client.py for the "rate parity" check (the
+hotel's own official-site rate, alongside Booking.com/Expedia) — see
+PLAN.md's original scope note that this is the hardest scraping problem and
+the most compelling part of the demo. All three sources are fetched by name
++ address via Google Hotels (see serpapi_client.get_all_source_rates), so
+`booking_url`/`expedia_url`/`brand_domain` are no longer needed to fetch a
+rate — they're kept as optional display-link fallbacks (used only if
+Google's own listing has no link) and as descriptive metadata.
 """
 
 from dataclasses import dataclass
@@ -23,12 +27,12 @@ from dataclasses import dataclass
 class Hotel:
     name: str
     is_primary: bool
-    address: str  # used for Expedia's address-based search when expedia_url isn't given
-    booking_url: str = ""  # skips Booking.com search step when known
-    expedia_url: str = ""  # skips Expedia's address search when known (see note below)
+    address: str  # used to search Google Hotels (name + address) for all three sources
+    booking_url: str = ""  # fallback display link only if Google's Booking.com entry has none
+    expedia_url: str = ""  # fallback display link only if Google's Expedia entry has none
     brand_name: str = ""
-    brand_url: str = ""
-    brand_domain: str = ""  # dispatch key for brand_scraper.py's date-param builders
+    brand_url: str = ""  # fallback display link only if Google's official entry has none
+    brand_domain: str = ""  # descriptive only (e.g. "marriott.com") — not used to fetch a rate
 
 
 HOTELS: list[Hotel] = [

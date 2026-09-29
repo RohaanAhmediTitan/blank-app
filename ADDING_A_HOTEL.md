@@ -28,6 +28,7 @@ web search (this is genuinely how the built-in hotels were researched too):
 Paste those six values into the form exactly as above and click **Add to comparison** — it'll show up in the
 "POC hotel set" table immediately and get included in the next **Fetch Rates** click.
 
-Giving both the Booking.com and Expedia URLs directly (rather than leaving them blank) matters more than it
-might look — Expedia's address-based search sorts by distance and can confidently return the *wrong* nearby
-hotel instead of this one, with no error to flag it. A direct URL skips that risk entirely.
+All three rates (Booking.com, Expedia, Brand.com) are looked up together by hotel name + street address via
+Google Hotels — so the address matters more than the URLs do; a vague or wrong address is the main way a
+lookup can silently match the wrong property. The Booking.com/Expedia/Brand-direct URLs are optional and only
+used as a fallback link if Google's own listing for that source doesn't include one.
