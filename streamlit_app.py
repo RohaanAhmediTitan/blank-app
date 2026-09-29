@@ -194,6 +194,144 @@ st.table(
     )
 )
 
+
+def _render_results(rows: list[dict], all_hotels: list[Hotel], completed_at: str | None = None, live: bool = False) -> None:
+    """Renders the rates grid + parity section for whatever rows are available
+    so far. Called both mid-fetch (live=True, partial rows — one more date's
+    worth lands each time) and once the fetch is done (live=False, full rows),
+    so the client sees results appear night by night instead of staring at a
+    bare progress bar until everything finishes."""
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+
+    if live:
+        st.caption(f"⏳ Fetching — filling in below as each night completes ({len(df)} request(s) so far).")
+    else:
+        st.success(
+            f"Last full fetch completed at **{completed_at}** — "
+            f"{len(df)} live requests made just now. Re-click **Fetch Rates** any time to prove it isn't cached."
+        )
+
+    st.subheader("Rates by hotel and night")
+    st.caption(
+        "One row per hotel/night. Each rate is a clickable link straight to the exact page our scraper "
+        "read it from — click 🔗 to verify against the live site yourself. Cheapest rate in each row is highlighted."
+    )
+
+    SOURCE_ORDER = ["Booking.com", "Expedia", "Brand.com"]
+    present_sources = [s for s in SOURCE_ORDER if s in df["source"].unique()]
+
+    def _safe_href(url) -> str | None:
+        # Anyone can add a hotel via the open add-hotel form (client_hotels'
+        # RLS allows any insert), and its URL fields flow straight into this
+        # raw HTML table's href attributes below — so only allow http(s)
+        # links and escape quotes, rather than trust the string as-is.
+        if not isinstance(url, str) or not url:
+            return None
+        if urlparse(url).scheme not in ("http", "https"):
+            return None
+        return html.escape(url, quote=True)
+
+    def _rate_cell(sub: pd.DataFrame) -> tuple[str, float | None]:
+        """Returns (html for this cell, numeric rate for cheapest-highlighting)."""
+        if sub.empty:
+            return "—", None
+        row = sub.iloc[0]
+        if not row.get("available") or pd.isna(row.get("lowest_rate")):
+            error = row.get("error")
+            has_error = pd.notna(error) and error  # NaN is truthy in Python — pandas pads
+            # missing "error" keys with NaN when other rows in the batch do have one, so a
+            # plain `if error` here misread every genuine sold-out row as a fetch failure.
+            label = "Couldn't fetch ⚠️" if has_error else "Sold out"
+            title = f' title="{html.escape(str(error), quote=True)}"' if has_error else ""
+            safe_url = _safe_href(row.get("url"))
+            # Link even when there's no rate, so "Sold out" is checkable against
+            # the live page instead of just having to be taken on faith.
+            if safe_url:
+                inner = f'<a href="{safe_url}" target="_blank" rel="noopener" style="color:#999;text-decoration:none;">{label} 🔗</a>'
+            else:
+                inner = label
+            return f'<span{title}>{inner}</span>', None
+        rate = row["lowest_rate"]
+        safe_url = _safe_href(row.get("url"))
+        text = f"${rate:,.0f}"
+        if safe_url:
+            return f'<a href="{safe_url}" target="_blank" rel="noopener" style="text-decoration:none;">{text} 🔗</a>', rate
+        return text, rate
+
+    header_cells = "".join(f'<th style="text-align:left;padding:6px 12px;">{s}</th>' for s in present_sources)
+    html_rows = []
+    for hotel in all_hotels:
+        hotel_df = df[df["Hotel"] == hotel.name]
+        for check_in in sorted(hotel_df["Date"].unique()):
+            day_df = hotel_df[hotel_df["Date"] == check_in]
+            cells, rates = [], []
+            for source in present_sources:
+                # Named cell_html, not html — a loop variable named `html`
+                # here would shadow the `html` module imported above for the
+                # rest of the script (confirmed live: the first cell renders
+                # fine, then every call after it hits AttributeError since
+                # `html.escape` becomes a string, not the module).
+                cell_html, rate = _rate_cell(day_df[day_df["source"] == source])
+                cells.append(cell_html)
+                rates.append(rate)
+            cheapest = min([r for r in rates if r is not None], default=None)
+            cell_html = "".join(
+                f'<td style="padding:6px 12px;{"background:#d4edda;font-weight:bold;" if r == cheapest and r is not None else ""}">{h}</td>'
+                for h, r in zip(cells, rates)
+            )
+            role = "Primary" if hotel.is_primary else "Competitor"
+            html_rows.append(
+                f'<tr><td style="padding:6px 12px;white-space:nowrap;"><b>{html.escape(hotel.name)}</b><br>'
+                f'<span style="color:#888;font-size:0.85em;">{role}</span></td>'
+                f'<td style="padding:6px 12px;white-space:nowrap;">{check_in}</td>{cell_html}</tr>'
+            )
+
+    table_html = (
+        '<table style="border-collapse:collapse;width:100%;">'
+        f'<thead><tr><th style="text-align:left;padding:6px 12px;">Hotel</th>'
+        f'<th style="text-align:left;padding:6px 12px;">Date</th>{header_cells}</tr></thead>'
+        f"<tbody>{''.join(html_rows)}</tbody></table>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    if "Brand.com" in df["source"].unique():
+        st.subheader("Rate parity (Brand.com vs. cheapest third-party site)")
+        st.caption(
+            "Mirrors the Alert Catalog's Parity violation rule: a third-party site undercutting the brand-direct rate. "
+            "Brand-direct reads depend on Google Hotels having that brand's price for this property/date "
+            "(see brand_scraper.py) — treat gaps as directional, and check the source URLs before acting on one."
+        )
+        available = df[df["available"] == True]  # noqa: E712 - pandas bool comparison, not identity
+        brand_rows = available[available["source"] == "Brand.com"][["Hotel", "Date", "lowest_rate", "url"]]
+        brand_rows = brand_rows.rename(columns={"lowest_rate": "Brand rate", "url": "Brand URL"})
+        ota_rows = available[available["source"] != "Brand.com"]
+        cheapest_ota = (
+            ota_rows.sort_values("lowest_rate").groupby(["Hotel", "Date"], as_index=False).first()
+            [["Hotel", "Date", "source", "lowest_rate", "url"]]
+            .rename(columns={"source": "Cheapest third-party", "lowest_rate": "Third-party rate", "url": "Third-party URL"})
+        )
+        parity = brand_rows.merge(cheapest_ota, on=["Hotel", "Date"], how="inner")
+        if parity.empty:
+            st.caption("No overlapping rows yet — fetch at least one third-party source alongside Brand.com.")
+        else:
+            parity["Gap ($)"] = parity["Third-party rate"] - parity["Brand rate"]
+            parity["Status"] = parity["Gap ($)"].apply(
+                lambda g: "🔴 Parity violation" if g < -0.5 else ("🟢 Brand wins" if g > 0.5 else "⚪ In parity")
+            )
+            st.dataframe(
+                parity[["Hotel", "Date", "Brand rate", "Cheapest third-party", "Third-party rate", "Gap ($)", "Status", "Brand URL", "Third-party URL"]],
+                width="stretch",
+                column_config={
+                    "Brand URL": st.column_config.LinkColumn("Brand URL"),
+                    "Third-party URL": st.column_config.LinkColumn("Third-party URL"),
+                    "Brand rate": st.column_config.NumberColumn(format="$%.0f"),
+                    "Third-party rate": st.column_config.NumberColumn(format="$%.0f"),
+                },
+            )
+
+
 if fetch_clicked:
     dates = [start_date + timedelta(days=i) for i in range(num_nights)]
 
@@ -257,153 +395,56 @@ if fetch_clicked:
             result = {"source": "Brand.com", "url": hotel.brand_url or None, "available": False, "lowest_rate": None, "error": str(exc)}
         return {"Hotel": hotel.name, "Date": check_in, "Fetched at": datetime.now().strftime("%H:%M:%S"), **result}
 
-    jobs = []
-    for hotel in all_hotels:
-        for check_in in dates:
+    # Grouped by date (not one flat list) so each date's jobs can be waited
+    # on and rendered as its own batch below — the client sees nights land
+    # one at a time instead of a blank grid until every date is done.
+    jobs_by_date: dict[date, list[tuple]] = {}
+    for check_in in dates:
+        date_jobs = []
+        for hotel in all_hotels:
             if "Booking.com" in sources:
-                jobs.append((_fetch_booking, hotel, check_in))
+                date_jobs.append((_fetch_booking, hotel, check_in))
             if "Expedia" in sources:
-                jobs.append((_fetch_expedia, hotel, check_in))
+                date_jobs.append((_fetch_expedia, hotel, check_in))
             if "Brand.com" in sources:
-                jobs.append((_fetch_brand, hotel, check_in))
+                date_jobs.append((_fetch_brand, hotel, check_in))
+        jobs_by_date[check_in] = date_jobs
 
-    rows = []
-    total_calls = len(jobs)
+    total_calls = sum(len(v) for v in jobs_by_date.values())
+    rows: list[dict] = []
     progress = st.progress(0.0, text="Starting fetch...")
     done = 0
+    results_area = st.empty()
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(fn, hotel, check_in): (hotel, check_in) for fn, hotel, check_in in jobs}
-        for future in as_completed(futures):
-            hotel, check_in = futures[future]
-            rows.append(future.result())
-            done += 1
-            progress.progress(done / max(total_calls, 1), text=f"Fetched {done}/{total_calls} — last: {hotel.name} — {check_in}")
+        for check_in in dates:
+            date_jobs = jobs_by_date[check_in]
+            if not date_jobs:
+                continue
+            futures = {executor.submit(fn, hotel, ci): (hotel, ci) for fn, hotel, ci in date_jobs}
+            for future in as_completed(futures):
+                hotel, ci = futures[future]
+                rows.append(future.result())
+                done += 1
+                progress.progress(done / max(total_calls, 1), text=f"Fetched {done}/{total_calls} — last: {hotel.name} — {ci}")
+            # This date is fully in (every hotel/source for it) — show it now
+            # rather than waiting for every remaining date too.
+            with results_area.container():
+                _render_results(rows, all_hotels, live=True)
 
     progress.empty()
     st.session_state["rate_rows"] = rows
     st.session_state["last_fetch_completed_at"] = datetime.now().strftime("%H:%M:%S")
     supabase_client.save_rate_shop_rows(rows)
+    with results_area.container():
+        _render_results(rows, all_hotels, completed_at=st.session_state["last_fetch_completed_at"], live=False)
 
-if "rate_rows" in st.session_state:
-    df = pd.DataFrame(st.session_state["rate_rows"])
-
-    st.success(
-        f"Last full fetch completed at **{st.session_state['last_fetch_completed_at']}** — "
-        f"{len(df)} live requests made just now. Re-click **Fetch Rates** any time to prove it isn't cached."
+elif "rate_rows" in st.session_state:
+    _render_results(
+        st.session_state["rate_rows"],
+        all_hotels,
+        completed_at=st.session_state.get("last_fetch_completed_at"),
+        live=False,
     )
-
-    st.subheader("Rates by hotel and night")
-    st.caption(
-        "One row per hotel/night. Each rate is a clickable link straight to the exact page our scraper "
-        "read it from — click 🔗 to verify against the live site yourself. Cheapest rate in each row is highlighted."
-    )
-
-    SOURCE_ORDER = ["Booking.com", "Expedia", "Brand.com"]
-    present_sources = [s for s in SOURCE_ORDER if s in df["source"].unique()]
-
-    def _safe_href(url) -> str | None:
-        # Anyone can add a hotel via the open add-hotel form (client_hotels'
-        # RLS allows any insert), and its URL fields flow straight into this
-        # raw HTML table's href attributes below — so only allow http(s)
-        # links and escape quotes, rather than trust the string as-is.
-        if not isinstance(url, str) or not url:
-            return None
-        if urlparse(url).scheme not in ("http", "https"):
-            return None
-        return html.escape(url, quote=True)
-
-    def _rate_cell(sub: pd.DataFrame) -> tuple[str, float | None]:
-        """Returns (html for this cell, numeric rate for cheapest-highlighting)."""
-        if sub.empty:
-            return "—", None
-        row = sub.iloc[0]
-        if not row.get("available") or pd.isna(row.get("lowest_rate")):
-            error = row.get("error")
-            has_error = pd.notna(error) and error  # NaN is truthy in Python — pandas pads
-            # missing "error" keys with NaN when other rows in the batch do have one, so a
-            # plain `if error` here misread every genuine sold-out row as a fetch failure.
-            label = "Couldn't fetch ⚠️" if has_error else "Sold out"
-            title = f' title="{html.escape(str(error), quote=True)}"' if has_error else ""
-            safe_url = _safe_href(row.get("url"))
-            # Link even when there's no rate, so "Sold out" is checkable against
-            # the live page instead of just having to be taken on faith.
-            if safe_url:
-                inner = f'<a href="{safe_url}" target="_blank" rel="noopener" style="color:#999;text-decoration:none;">{label} 🔗</a>'
-            else:
-                inner = label
-            return f'<span{title}>{inner}</span>', None
-        rate = row["lowest_rate"]
-        safe_url = _safe_href(row.get("url"))
-        text = f"${rate:,.0f}"
-        if safe_url:
-            return f'<a href="{safe_url}" target="_blank" rel="noopener" style="text-decoration:none;">{text} 🔗</a>', rate
-        return text, rate
-
-    header_cells = "".join(f'<th style="text-align:left;padding:6px 12px;">{s}</th>' for s in present_sources)
-    html_rows = []
-    for hotel in all_hotels:
-        hotel_df = df[df["Hotel"] == hotel.name]
-        for check_in in sorted(hotel_df["Date"].unique()):
-            day_df = hotel_df[hotel_df["Date"] == check_in]
-            cells, rates = [], []
-            for source in present_sources:
-                html, rate = _rate_cell(day_df[day_df["source"] == source])
-                cells.append(html)
-                rates.append(rate)
-            cheapest = min([r for r in rates if r is not None], default=None)
-            cell_html = "".join(
-                f'<td style="padding:6px 12px;{"background:#d4edda;font-weight:bold;" if r == cheapest and r is not None else ""}">{h}</td>'
-                for h, r in zip(cells, rates)
-            )
-            role = "Primary" if hotel.is_primary else "Competitor"
-            html_rows.append(
-                f'<tr><td style="padding:6px 12px;white-space:nowrap;"><b>{html.escape(hotel.name)}</b><br>'
-                f'<span style="color:#888;font-size:0.85em;">{role}</span></td>'
-                f'<td style="padding:6px 12px;white-space:nowrap;">{check_in}</td>{cell_html}</tr>'
-            )
-
-    table_html = (
-        '<table style="border-collapse:collapse;width:100%;">'
-        f'<thead><tr><th style="text-align:left;padding:6px 12px;">Hotel</th>'
-        f'<th style="text-align:left;padding:6px 12px;">Date</th>{header_cells}</tr></thead>'
-        f"<tbody>{''.join(html_rows)}</tbody></table>"
-    )
-    st.markdown(table_html, unsafe_allow_html=True)
-
-    if "Brand.com" in df["source"].unique():
-        st.subheader("Rate parity (Brand.com vs. cheapest third-party site)")
-        st.caption(
-            "Mirrors the Alert Catalog's Parity violation rule: a third-party site undercutting the brand-direct rate. "
-            "Brand-direct reads depend on Google Hotels having that brand's price for this property/date "
-            "(see brand_scraper.py) — treat gaps as directional, and check the source URLs before acting on one."
-        )
-        available = df[df["available"] == True]  # noqa: E712 - pandas bool comparison, not identity
-        brand_rows = available[available["source"] == "Brand.com"][["Hotel", "Date", "lowest_rate", "url"]]
-        brand_rows = brand_rows.rename(columns={"lowest_rate": "Brand rate", "url": "Brand URL"})
-        ota_rows = available[available["source"] != "Brand.com"]
-        cheapest_ota = (
-            ota_rows.sort_values("lowest_rate").groupby(["Hotel", "Date"], as_index=False).first()
-            [["Hotel", "Date", "source", "lowest_rate", "url"]]
-            .rename(columns={"source": "Cheapest third-party", "lowest_rate": "Third-party rate", "url": "Third-party URL"})
-        )
-        parity = brand_rows.merge(cheapest_ota, on=["Hotel", "Date"], how="inner")
-        if parity.empty:
-            st.caption("No overlapping rows yet — fetch at least one third-party source alongside Brand.com.")
-        else:
-            parity["Gap ($)"] = parity["Third-party rate"] - parity["Brand rate"]
-            parity["Status"] = parity["Gap ($)"].apply(
-                lambda g: "🔴 Parity violation" if g < -0.5 else ("🟢 Brand wins" if g > 0.5 else "⚪ In parity")
-            )
-            st.dataframe(
-                parity[["Hotel", "Date", "Brand rate", "Cheapest third-party", "Third-party rate", "Gap ($)", "Status", "Brand URL", "Third-party URL"]],
-                width="stretch",
-                column_config={
-                    "Brand URL": st.column_config.LinkColumn("Brand URL"),
-                    "Third-party URL": st.column_config.LinkColumn("Third-party URL"),
-                    "Brand rate": st.column_config.NumberColumn(format="$%.0f"),
-                    "Third-party rate": st.column_config.NumberColumn(format="$%.0f"),
-                },
-            )
 else:
     st.info("Set your dates and click **Fetch Rates** in the sidebar to pull live rates.")
