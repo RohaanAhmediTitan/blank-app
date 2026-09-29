@@ -1,5 +1,6 @@
-"""SerpApi Google Hotels client — sole rate source for Booking.com, Expedia,
-and Brand.com.
+"""SerpApi Google Hotels client — sole rate source for every third-party
+source in THIRD_PARTY_SOURCES (Booking.com, Expedia, Agoda, Priceline,
+Hotels.com, trivago) plus Brand.com.
 
 Started as brand.com-only (see git history), which hit two Firecrawl dead
 ends: Marriott blocks its render engines outright (SCRAPE_ALL_ENGINES_FAILED
@@ -40,14 +41,14 @@ Response shape, confirmed live (2026-09-29):
     (extracted_before_taxes_fees). Confirmed live against marriott.com
     directly: extracted_lowest read $620 while the live page showed
     $529/night before tax — extracted_lowest is the inclusive total, not a
-    wrong number. All three sources here use before_taxes_fees (falling back
-    to the inclusive figure only if a listing doesn't break it out), matching
+    wrong number. Every source here uses before_taxes_fees (falling back to
+    the inclusive figure only if a listing doesn't break it out), matching
     the public/Best Available Rate convention industry rate-shopping tools
     use for parity comparisons.
 
-One call per hotel/date returns all three sources at once (they're all in
-the same `prices` array), so callers should fetch once via
-`get_all_source_rates` rather than querying per source.
+One call per hotel/date returns every source at once (they're all in the
+same `prices` array), so callers should fetch once via `get_all_source_rates`
+rather than querying per source.
 
 Coverage is inherently partial: a miss here means Google's hotel-price feed
 doesn't have a listing for this source/property/date, not necessarily that
@@ -142,6 +143,26 @@ def _rate_from_entry(entry: dict) -> float | None:
     return per_night.get("extracted_before_taxes_fees") or per_night.get("extracted_lowest")
 
 
+# Third-party sources matched by a plain substring on Google's `source` field
+# (confirmed live: labels vary a bit, e.g. "Expedia.com" vs "Expedia.co.uk",
+# so a substring is more robust than an exact match). This is a curated
+# subset of the 20-30+ sources Google Hotels typically returns per property —
+# limited to major, recognizable OTAs rather than every reseller/aggregator
+# in the feed (many of those are small meta-search resellers with no brand
+# recognition, and the full list varies wildly in length between properties,
+# which would make the grid inconsistent from one hotel to the next).
+THIRD_PARTY_SOURCES: list[tuple[str, str]] = [
+    ("Booking.com", "booking"),
+    ("Expedia", "expedia"),
+    ("Agoda", "agoda"),
+    ("Priceline", "priceline"),
+    ("Hotels.com", "hotels.com"),
+    ("trivago", "trivago"),
+]
+
+ALL_SOURCE_NAMES: list[str] = [name for name, _ in THIRD_PARTY_SOURCES] + ["Brand.com"]
+
+
 def get_all_source_rates(
     hotel_name: str,
     address: str,
@@ -153,15 +174,18 @@ def get_all_source_rates(
     expedia_url: str = "",
     brand_url: str = "",
 ) -> dict[str, dict]:
-    """One SerpApi lookup per hotel/date, returning Booking.com, Expedia, and
-    Brand.com all at once — Google's Hotels feed already lists every source
-    for a property in the same response, so there's no reason to call the
-    API three times for data that comes back in one call.
+    """One SerpApi lookup per hotel/date, returning every source in
+    THIRD_PARTY_SOURCES plus Brand.com all at once — Google's Hotels feed
+    already lists every source for a property in the same response, so
+    there's no reason to call the API once per source for data that comes
+    back in one call.
 
-    Each `*_url` fallback is used as the displayed link only if Google's own
-    entry has none — where Google does have a link, it's preferred, since
-    (for Brand.com, confirmed live) it's a dated redirect that reproduces the
-    exact quote, not a generic overview page with no dates set.
+    The displayed URL is Google's own link for that quote where available
+    (for Brand.com, confirmed live, it's a dated redirect that reproduces
+    the exact quote rather than a generic overview page with no dates set);
+    `booking_url`/`expedia_url`/`brand_url` are used only as a fallback for
+    the three sources that have an on-file static link, when Google's entry
+    has none.
     """
     try:
         prices, matched_name = _resolve_prices(hotel_name, address, check_in, check_out, guests)
@@ -169,7 +193,7 @@ def get_all_source_rates(
         error = str(exc)
         return {
             key: {"source": key, "url": None, "available": False, "lowest_rate": None, "error": error}
-            for key in ("Booking.com", "Expedia", "Brand.com")
+            for key in ALL_SOURCE_NAMES
         }
 
     if not prices:
@@ -177,19 +201,20 @@ def get_all_source_rates(
         error = f"Couldn't confidently match this hotel in Google Hotels{note}"
         return {
             key: {"source": key, "url": None, "available": False, "lowest_rate": None, "error": error}
-            for key in ("Booking.com", "Expedia", "Brand.com")
+            for key in ALL_SOURCE_NAMES
         }
 
-    booking_entry = _find_by_keyword(prices, "booking")
-    expedia_entry = _find_by_keyword(prices, "expedia")
+    fallback_urls = {"Booking.com": booking_url, "Expedia": expedia_url}
     official_entry = next((p for p in prices if p.get("official")), None)
 
+    lookups: list[tuple[str, dict | None, str, str]] = [
+        (name, _find_by_keyword(prices, keyword), fallback_urls.get(name, ""), name)
+        for name, keyword in THIRD_PARTY_SOURCES
+    ]
+    lookups.append(("Brand.com", official_entry, brand_url, f"official {brand_name or 'brand'}-direct"))
+
     results: dict[str, dict] = {}
-    for key, entry, fallback_url, missing_label in (
-        ("Booking.com", booking_entry, booking_url, "Booking.com"),
-        ("Expedia", expedia_entry, expedia_url, "Expedia"),
-        ("Brand.com", official_entry, brand_url, f"official {brand_name or 'brand'}-direct"),
-    ):
+    for key, entry, fallback_url, missing_label in lookups:
         if not entry:
             sources = ", ".join(p.get("source", "?") for p in prices[:5])
             results[key] = {

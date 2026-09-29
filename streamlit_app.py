@@ -22,7 +22,7 @@ import pandas as pd
 import streamlit as st
 
 from hotels import HOTELS, Hotel
-from serpapi_client import get_all_source_rates
+from serpapi_client import ALL_SOURCE_NAMES, get_all_source_rates
 import supabase_client
 
 # All three sources now come from one SerpApi call per hotel/date (see
@@ -86,9 +86,9 @@ with st.sidebar:
     guests = st.number_input("Guests", min_value=1, max_value=4, value=2)
     sources = st.multiselect(
         "Sources",
-        ["Booking.com", "Expedia", "Brand.com"],
-        default=["Booking.com"],
-        help="All three come from the same Google Hotels lookup per hotel/date — expect gaps whenever "
+        ALL_SOURCE_NAMES,
+        default=["Booking.com", "Expedia"],
+        help="All sources come from the same Google Hotels lookup per hotel/date — expect gaps whenever "
         "a source doesn't have a listing for that property/date in Google's feed. Rates shown are the "
         "public/Best Available Rate, not a loyalty-member discount — the same convention industry "
         "rate-shopping tools use, since parity contracts are scoped to the public rate.",
@@ -209,8 +209,7 @@ def _render_results(rows: list[dict], all_hotels: list[Hotel], completed_at: str
         "read it from — click 🔗 to verify against the live site yourself. Cheapest rate in each row is highlighted."
     )
 
-    SOURCE_ORDER = ["Booking.com", "Expedia", "Brand.com"]
-    present_sources = [s for s in SOURCE_ORDER if s in df["source"].unique()]
+    present_sources = [s for s in ALL_SOURCE_NAMES if s in df["source"].unique()]
 
     def _safe_href(url) -> str | None:
         # Anyone can add a hotel via the open add-hotel form (client_hotels'
@@ -328,11 +327,11 @@ def _render_results(rows: list[dict], all_hotels: list[Hotel], completed_at: str
 if fetch_clicked:
     dates = [start_date + timedelta(days=i) for i in range(num_nights)]
 
-    # One SerpApi call per hotel/date returns Booking.com, Expedia, and
-    # Brand.com together (see serpapi_client.get_all_source_rates) — no
-    # separate resolve phase needed (that was only ever for finding each
+    # One SerpApi call per hotel/date returns every source in
+    # ALL_SOURCE_NAMES together (see serpapi_client.get_all_source_rates) —
+    # no separate resolve phase needed (that was only ever for finding each
     # hotel's Booking.com/Expedia URL before scraping it directly), and no
-    # per-source job type either, since all three come from one lookup.
+    # per-source job type either, since every source comes from one lookup.
     def _fetch_hotel_date(hotel: Hotel, check_in: date) -> list[dict]:
         check_out = check_in + timedelta(days=1)
         try:
@@ -351,7 +350,7 @@ if fetch_clicked:
             error = str(exc)
             by_source = {
                 key: {"source": key, "url": None, "available": False, "lowest_rate": None, "error": error}
-                for key in ("Booking.com", "Expedia", "Brand.com")
+                for key in ALL_SOURCE_NAMES
             }
         fetched_at = datetime.now().strftime("%H:%M:%S")
         return [
