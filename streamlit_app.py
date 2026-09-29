@@ -87,7 +87,7 @@ with st.sidebar:
     sources = st.multiselect(
         "Sources",
         ALL_SOURCE_NAMES,
-        default=["Booking.com", "Expedia"],
+        default=ALL_SOURCE_NAMES,
         help="All sources come from the same Google Hotels lookup per hotel/date — expect gaps whenever "
         "a source doesn't have a listing for that property/date in Google's feed. Rates shown are the "
         "public/Best Available Rate, not a loyalty-member discount — the same convention industry "
