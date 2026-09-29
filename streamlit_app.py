@@ -27,18 +27,20 @@ from hotels import HOTELS, Hotel
 import supabase_client
 
 # Lowered from 6 after live testing showed real rate-limit (429) errors under
-# concurrent load, worst for Brand.com since each call there is a full page
-# render + LLM extraction — the most expensive request type competing for
-# the same per-account limit as the faster Booking.com/Expedia calls.
+# concurrent load from Booking.com/Expedia, which still go through Firecrawl
+# and share its per-account rate limit. Brand.com now goes through SerpApi
+# instead (a separate account/limit entirely — see brand_scraper.py), so it
+# no longer competes for this same budget.
 MAX_WORKERS = 3
 
 # Measured against the live sites (see docs/SESSION_CONTEXT.md): concurrency
-# doesn't help — Firecrawl appears to serialize requests per account/plan, so
-# these are real per-call wall-clock costs, not something threading hides.
+# doesn't help for Firecrawl-backed calls — Firecrawl appears to serialize
+# requests per account/plan, so these are real per-call wall-clock costs, not
+# something threading hides.
 SECONDS_PER_BOOKING_CALL = 14
 SECONDS_PER_EXPEDIA_RESOLVE = 8  # once per hotel, not per date
 SECONDS_PER_EXPEDIA_DETAIL_CALL = 18
-SECONDS_PER_BRAND_CALL = 25  # extract is async (submit + poll), slower than a plain scrape
+SECONDS_PER_BRAND_CALL = 4  # plain REST call via SerpApi, not a page render + LLM extraction
 
 st.set_page_config(page_title="RevRadar Rate Shop POC", layout="wide")
 st.title("RevRadar — Live Rate Comparison POC")
@@ -92,8 +94,8 @@ with st.sidebar:
         ["Booking.com", "Expedia", "Brand.com"],
         default=["Booking.com"],
         help="Expedia needs an 8s render wait to avoid its loading skeleton. Brand.com (rate parity — "
-        "the hotel's own official-site rate) is the slowest and least reliable, since it reads whatever "
-        "each brand's booking widget renders rather than a known page structure — add it last.",
+        "the hotel's own official-site rate) depends on Google Hotels having that brand's price listed "
+        "for this property and date — expect gaps when a brand doesn't participate in Google's feed.",
     )
 
     st.divider()
@@ -240,7 +242,16 @@ if fetch_clicked:
     def _fetch_brand(hotel: Hotel, check_in: date) -> dict:
         check_out = check_in + timedelta(days=1)
         try:
-            result = get_brand_rate(hotel.brand_url, hotel.brand_domain, check_in, check_out, guests)
+            result = get_brand_rate(
+                hotel.name,
+                hotel.address,
+                hotel.brand_name,
+                hotel.brand_domain,
+                check_in,
+                check_out,
+                guests,
+                brand_url=hotel.brand_url,
+            )
         except Exception as exc:  # noqa: BLE001
             result = {"source": "Brand.com", "url": hotel.brand_url or None, "available": False, "lowest_rate": None, "error": str(exc)}
         return {"Hotel": hotel.name, "Date": check_in, "Fetched at": datetime.now().strftime("%H:%M:%S"), **result}
@@ -352,8 +363,8 @@ if "rate_rows" in st.session_state:
         st.subheader("Rate parity (Brand.com vs. cheapest third-party site)")
         st.caption(
             "Mirrors the Alert Catalog's Parity violation rule: a third-party site undercutting the brand-direct rate. "
-            "Brand-direct reads are best-effort (see brand_scraper.py) — treat gaps as directional, and "
-            "check the source URLs before acting on one."
+            "Brand-direct reads depend on Google Hotels having that brand's price for this property/date "
+            "(see brand_scraper.py) — treat gaps as directional, and check the source URLs before acting on one."
         )
         available = df[df["available"] == True]  # noqa: E712 - pandas bool comparison, not identity
         brand_rows = available[available["source"] == "Brand.com"][["Hotel", "Date", "lowest_rate", "url"]]
